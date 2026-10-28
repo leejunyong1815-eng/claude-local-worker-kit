@@ -63,7 +63,7 @@ claude-local-worker-kit/
 - [x] 자기 환경에서 설치 테스트: 임시 prefix 에 설치, `-p` 응답·Bash 도구 호출·`--bg` 워커에 크로스 세션 메시지 전달까지 GLM 서버로 확인 (2026-10-28)
 - [x] 연구실 LLM 서버(1.233.219.134:8080, llama.cpp docker, `qwen3.6-35b-a3b`) 확인 → 기본값·프롬프트 반영 (2026-10-28)
 - [x] ssh 터널(127.0.0.1:18080 → LLM:8080)로 `llm-probe` 8/8 OK, `claude-worker -p` 일반 응답·Bash 도구 호출 OK (2026-10-28)
-- [ ] 서버 포트가 0.0.0.0 으로 열리면 터널 없이 재확인
+- [x] 서버가 0.0.0.0:8080 으로 열림 → 터널 없이 `llm-probe` 8/8 OK, `claude-worker -p` Bash 도구 호출 OK (2026-10-28, 4e)
 - [x] git init (초기 커밋)
 - [ ] 태그, 연구실 공유 경로(`/mnt/148TB/LJY/...`) 또는 git 저장소로 배포
 
@@ -82,7 +82,7 @@ claude-local-worker-kit/
 - `llm-probe`: 모델 목록·비스트리밍·SSE·tool_use·tool_result 왕복·cache_control·thinking·count_tokens 전부 OK.
   (비스트리밍 응답 텍스트가 비어 있던 것은 사고 토큰이 max_tokens 32 를 소진한 것. 서버 문제 아님.)
 - `claude-worker -p`: 일반 응답 OK, `--allowedTools Bash` 로 `wc -c` 실행 결과 정확.
-- `LLM_CONTEXT_WINDOW=131072` 설정으로 "context assumed to be 200k" 경고 사라짐.
+- `LLM_CONTEXT_WINDOW` 설정으로 "context assumed to be 200k" 경고 사라짐. (당시 131072 로 넣었으나 4e 에서 슬롯당 32768 로 정정.)
 - 서버 `chat_template_caps`: tools, parallel tool calls, system role, preserve_reasoning 지원. reasoning_effort 미지원.
 
 ## 4d. 두 모델 구성 (2026-10-28)
@@ -91,11 +91,21 @@ claude-local-worker-kit/
 - `claude-worker -P 27b`, `claude-duo -P 27b`, `llm-probe -P 27b`, `install.sh --profile 27b`. 프로필은 COMPUTE_* 를 기본 env 에서 물려받는다.
 - 27b 서버의 포트(8081)와 별칭(`qwen3.8-27b`)은 서버가 뜨기 전의 가정값. 다르면 `install.sh` 상단 LAB_27B_* 와 README 를 고친다.
 
+## 4e. 직접 연결 재검증 (2026-10-28, 서버 `--host 0.0.0.0` 전환 후)
+
+- 서버 인자(호스트 `ps`): `--ctx-size 131072 --parallel 4 --no-kv-unified --cache-prompt --cache-ram 40960 --jinja`, Vulkan0+Vulkan1 layer split, 빌드 b11946.
+  `/props`·`/slots`: 슬롯 4개, **슬롯당 n_ctx 32768**. 39,796 토큰 요청 → 즉시 400 `exceed_context_size_error` 확인.
+  → `LAB_DEFAULT_CTX`/`LAB_27B_CTX`/env 예시/README 를 32768 로 정정. (27b 서버는 뜨면 같은 방식으로 확인.)
+- 실측 속도(16.9k 토큰 프롬프트): 프롬프트 처리 352 tok/s, 생성 16.7 tok/s. `claude-worker -p` 한 번짜리 Bash 왕복 3분 19초.
+- `llm-probe http://1.233.219.134:8080 qwen3.6-35b-a3b none` 8/8 OK. 8081 은 아직 닫힘(연결 거부).
+- 사용자 계정은 docker 그룹이 아니라 `docker ps` 불가. 서버 인자는 `ps -eo args | grep llama-server` 로 본다.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
-  `--ctx-size 131072 --parallel 4`, Vulkan0+Vulkan1 layer split. 2026-10-28 현재 docker 가 **127.0.0.1:8080 에만** 매핑되어
-  외부에서 못 붙는다 → 관리자가 0.0.0.0 으로 바꾸거나 각자 ssh 터널(docs/TROUBLESHOOTING.md).
+  `--ctx-size 131072 --parallel 4 --no-kv-unified`(슬롯당 32768), Vulkan0+Vulkan1 layer split. 2026-10-28 오후부터 **0.0.0.0:8080** 으로 열려
+  외부에서 바로 붙는다 (터널 불필요; 터널 안내는 TROUBLESHOOTING 에 일반 사례로 남김).
+  관리자에게 제안할 것: `--kv-unified` 로 바꾸면 한 요청이 131072 전체를 쓸 수 있어 Claude Code 의 긴 작업에 유리하다(동시 요청은 풀을 나눠 씀).
   (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
 - 27b 서버(Qwen3.8-27B)의 **포트와 별칭** 확정. 현재 가정값 :8081 / `qwen3.8-27b` (install.sh 상단 LAB_27B_*). 뜨면 `llm-probe -P 27b`.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.

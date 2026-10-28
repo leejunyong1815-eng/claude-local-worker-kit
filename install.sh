@@ -16,8 +16,9 @@ MIN_CLAUDE="2.1.224"   # 크로스 세션 메시징 최소 버전
 
 # 연구실 기본값 — 서버가 바뀌면 여기만 고친다.
 LAB_HOST="http://1.233.219.134"
-LAB_DEFAULT_PORT=8080;  LAB_DEFAULT_MODEL="qwen3.6-35b-a3b";  LAB_DEFAULT_CTX=131072   # 기본 워커: 빠름, 도구 호출 위주
-LAB_27B_PORT=8081;      LAB_27B_MODEL="qwen3.8-27b";          LAB_27B_CTX=131072       # 프로필 27b: 느리지만 구현·디버깅 품질 높음
+# 컨텍스트는 "요청 하나가 쓸 수 있는 크기"다. llama.cpp 는 --ctx-size 를 --parallel 슬롯 수로 나눈다 (131072/4 = 32768).
+LAB_DEFAULT_PORT=8080;  LAB_DEFAULT_MODEL="qwen3.6-35b-a3b";  LAB_DEFAULT_CTX=32768    # 기본 워커: 빠름, 도구 호출 위주
+LAB_27B_PORT=8081;      LAB_27B_MODEL="qwen3.8-27b";          LAB_27B_CTX=32768        # 프로필 27b: 느리지만 구현·디버깅 품질 높음 (서버 뜨면 확인)
 
 while [ $# -gt 0 ]; do
     case "$1" in

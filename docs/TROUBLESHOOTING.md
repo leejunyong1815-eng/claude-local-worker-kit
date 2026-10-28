@@ -22,7 +22,7 @@
 
 | 항목 | FAIL 의미 | 조치 |
 |---|---|---|
-| 1) /v1/models 연결 실패 | 주소·포트·방화벽 | 서버에서 `curl localhost:PORT/v1/models`. 127.0.0.1 에만 바인딩됐으면 아래 "ssh 터널" |
+| 1) /v1/models 연결 실패 | 주소·포트·방화벽 | 서버에서 `curl localhost:PORT/v1/models`. 거기선 되는데 밖에서 안 되면 127.0.0.1 바인딩 → 아래 "ssh 터널" |
 | 2) /v1/messages | 서버가 Anthropic API 미지원 | vLLM/SGLang/llama.cpp/Ollama 를 최신으로 올리거나 `proxy/` 사용 |
 | 3) 스트리밍 | SSE 미지원 또는 중간 프록시가 버퍼링 | nginx 등 앞단이 있으면 `proxy_buffering off`. 아니면 `proxy/` |
 | 4) tool_use | 모델 또는 서버가 함수 호출 미지원 | **필수.** 도구 호출 되는 모델(Qwen3-Coder, GLM-4.x/5.x, DeepSeek-V3 계열 등)과 서버 옵션(vLLM: `--enable-auto-tool-choice --tool-call-parser <모델에 맞는 파서>`) |
@@ -40,11 +40,18 @@
 **vLLM 에서 새 Claude Code 버전이 거부된다 (role 오류)** — Claude Code 가 보내는 메시지 역할을 구버전 vLLM 이 모를 수 있다.
 vLLM 을 올리거나 `proxy/` 로 우회.
 
-**"doesn't recognize the model … assumes a context window of 200k"** — 경고일 뿐 동작은 한다. 실제 창이 다르면 env `LLM_CONTEXT_WINDOW=<토큰 수>`
-(서버의 `--max-model-len`) 로 알려 준다. 그러면 Claude Code 가 그 경계에서 자동 압축한다.
+**"doesn't recognize the model … assumes a context window of 200k"** — 경고일 뿐 동작은 한다. 그러나 실제 창이 200k 보다 작으면
+아래 400 오류로 이어지므로 env `LLM_CONTEXT_WINDOW=<토큰 수>` 를 꼭 맞춘다. 그러면 Claude Code 가 그 경계 전에 자동 압축한다.
+값은 **요청 하나가 쓸 수 있는 크기**다: llama.cpp 는 `--ctx-size ÷ --parallel` (`--kv-unified` 면 `--ctx-size` 전체), vLLM/SGLang 은 `--max-model-len`.
+서버의 `curl host:port/props` 에서 `default_generation_settings.n_ctx` 로 확인할 수 있다. 연구실 서버는 131072/4 = **32768**.
 
-**컨텍스트 길이 초과** — 로컬 모델의 컨텍스트가 짧으면 긴 작업에서 실패한다. 태스크를 더 잘게 나눠 보내고,
-워커 세션을 자주 새로 시작한다(`/clear`). 서버의 `--max-model-len` 도 확인.
+**400 `exceed_context_size_error` ("request (N tokens) exceeds the available context size")** — 요청이 슬롯 컨텍스트를 넘었다.
+`LLM_CONTEXT_WINDOW` 가 서버 값보다 크게 적혀 있는 것이 거의 전부다. 맞춘 뒤 `install.sh --render`, 워커 재시작.
+맞게 적혀 있는데도 난다면 태스크를 더 잘게 나눠 보내고 워커 세션을 자주 새로 시작한다(`/clear`).
+서버 쪽 해결은 관리자가 `--kv-unified` 를 켜거나(슬롯이 컨텍스트 풀을 공유해 한 요청이 전체를 쓸 수 있음) `--parallel` 을 줄이는 것.
+
+**느리다** — 연구실 서버 실측은 프롬프트 처리 약 350 tok/s, 생성 약 17 tok/s. Claude Code 의 첫 요청은 15~20k 토큰이라 첫 턴에 1분 가까이 걸리는 것이 정상이다.
+서버의 프롬프트 캐시가 이어지는 턴을 줄여 주므로, 같은 워커 세션 안에서 태스크를 이어 보내는 편이 빠르다.
 
 **서버가 127.0.0.1 에만 열려 있다 (docker `-p 127.0.0.1:8080:8080`)** — 외부에서는 연결이 거부된다. 두 가지 중 하나:
 - 서버 관리자가 docker 포트 매핑을 `-p 8080:8080` (0.0.0.0) 으로 바꾼다. 연구실 내부망 전용이면 이쪽이 간단하다.
