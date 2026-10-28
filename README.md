@@ -31,7 +31,7 @@ Claude Code 세션 두 개를 짝지어 쓰는 구성이다.
 |---|---|
 | Claude Code | ≥ 2.1.224 (`claude --version`). 설치: `curl -fsSL https://claude.ai/install.sh \| bash` |
 | Claude 계정 | 오케스트레이터용. 터미널에서 `claude` 를 한 번 실행해 로그인해 둔다 |
-| 로컬 LLM 서버 | 연구실 서버 `http://1.233.219.134:8080` (llama.cpp `llama-server` docker, 모델 `qwen3.6-35b-a3b`, 컨텍스트 131k, 동시 슬롯 4, 인증 없음). 다른 서버도 Anthropic Messages API(`/v1/messages`)만 제공하면 된다(vLLM·SGLang·llama.cpp·Ollama ≥0.14·LiteLLM) |
+| 로컬 LLM 서버 | 연구실 서버 `1.233.219.134` (llama.cpp `llama-server` docker, 인증 없음). 포트 8080 = `qwen3.6-35b-a3b`(빠름), 포트 8081 = `qwen3.8-27b`(품질). 다른 서버도 Anthropic Messages API(`/v1/messages`)만 제공하면 된다(vLLM·SGLang·llama.cpp·Ollama ≥0.14·LiteLLM) |
 | 기타 | python3, curl 필수. tmux(동시 실행), rsync·ssh(원격 노드)는 선택 |
 | OS | Linux, WSL2, macOS. 두 세션은 반드시 **같은 머신, 같은 사용자 계정**에서 띄운다 |
 
@@ -56,12 +56,15 @@ cd ~/claude-local-worker-kit
 
 끝에 `llm-probe` 가 서버를 점검한다. 마지막 줄이 **"판정: 직접 연결 가능"** 이면 설치 완료.
 FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를 본다.
+마지막 질문 "두 번째 모델(Qwen3.8-27B) 워커 프로필 `27b` 도 만들까요?" 에 Enter 를 치면 두 모델 구성이 완성된다(아래 4절).
 
-질문 없이 설치하려면:
+질문 없이 설치하려면 (두 모델 모두, 연구실 기본값):
 
 ```bash
-LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=qwen3.6-35b-a3b ./install.sh --non-interactive
+./install.sh --non-interactive && ./install.sh --profile 27b --non-interactive
 ```
+
+다른 서버를 쓰려면 환경변수로 값을 준다: `LLM_BASE_URL=http://host:port LLM_MODEL=<id> ./install.sh --non-interactive`.
 
 설치되는 것:
 
@@ -70,8 +73,8 @@ LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=qwen3.6-35b-a3
 | `~/.local/bin/claude-main`, `claude-worker`, `claude-duo` | 실행기 |
 | `~/.local/bin/llm-probe` | 서버 점검 |
 | `~/.local/bin/remote-{info,sync,run,submit,fetch}` | 원격 노드 실행 (COMPUTE_HOST 설정 시) |
-| `~/.config/claude-worker/env` | 서버·모델·토큰 (권한 0600) |
-| `~/.config/claude-worker/worker.md` | 워커 시스템 프롬프트 (env 에서 자동 생성) |
+| `~/.config/claude-worker/env`, `env.27b` | 기본 워커·27b 워커의 서버·모델·토큰 (권한 0600) |
+| `~/.config/claude-worker/worker.md`, `worker.27b.md` | 워커 시스템 프롬프트 (env 에서 자동 생성) |
 
 `~/.local/bin` 이 PATH 에 없다는 경고가 나오면 `~/.bashrc` 에 `export PATH="$HOME/.local/bin:$PATH"` 를 넣고 새 셸을 연다.
 
@@ -79,13 +82,14 @@ LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=qwen3.6-35b-a3
 
 ```bash
 cd ~/my-project
-claude-duo
+claude-duo -P 27b        # 오케스트레이터 + 기본 워커(35B-A3B) + 27b 워커
+claude-duo               # 오케스트레이터 + 기본 워커만
 ```
 
 tmux 창이 열린다. 왼쪽이 오케스트레이터, 오른쪽이 워커다. 창 사이 이동은 `Ctrl-b` 다음 화살표,
 떼어 두기는 `Ctrl-b d`, 다시 붙기는 `claude-duo`, 끝내기는 `claude-duo --kill`.
 
-tmux 가 싫으면 터미널 두 개에서 각각 `claude-main`, `claude-worker` 를 **같은 프로젝트 디렉터리**에서 띄운다.
+tmux 가 싫으면 터미널마다 `claude-main`, `claude-worker`, `claude-worker -P 27b` 를 **같은 프로젝트 디렉터리**에서 띄운다.
 
 처음 여는 프로젝트 디렉터리면 두 세션 모두 "이 폴더를 신뢰하느냐"고 묻는다. 둘 다 예.
 
@@ -123,6 +127,18 @@ cp -r ~/claude-local-worker-kit/templates/project/{AGENTS.md,agents,KICKOFF_PROM
 `AGENTS.md` 와 `agents/ROLE_*.md` 를 프로젝트에 맞게 고친 뒤, `KICKOFF_PROMPT.md` 내용을 오케스트레이터 창에
 붙여 넣으면 오케스트레이터가 규칙을 읽고 태스크를 배정하기 시작한다.
 
+### 두 모델을 나눠 쓰기
+
+연구실 서버에는 성격이 다른 모델 두 개가 떠 있다. 워커도 둘로 나눠 띄우고 일의 성격에 따라 보낸다.
+
+| 워커 | 모델 | 특징 | 보낼 일 |
+|---|---|---|---|
+| `@llm-worker` (기본) | Qwen3.6-35B-A3B, 포트 8080 | MoE, 활성 3B. 토큰 생성이 빠르다 | 테스트 실행, 로그·결과 수집, 실험 돌리기, 파일 정리처럼 **도구 호출이 많고 추론은 가벼운 일** |
+| `@llm-worker-27b` | Qwen3.8-27B, 포트 8081 | dense 27B. 느리지만 SWE-bench Pro 61.7 (Claude Code 하네스 측정) | 기능 구현, 버그 원인 추적, 리팩터링처럼 **생각이 필요한 일** |
+
+둘 다 `Ask @이름 to …` 로 똑같이 부른다. `templates/project/agents/ORCHESTRATOR.md` 에 이 배분 규칙이 들어 있어
+오케스트레이터가 알아서 고른다. 27b 서버가 아직 안 떠 있으면 `claude-duo` 만 쓰면 된다.
+
 ### 워커가 멈춰 있을 때
 
 워커 창을 본다. 대개 Bash 명령 실행 허가를 묻고 있다. 매번 허락하기 귀찮으면
@@ -137,11 +153,13 @@ cp -r ~/claude-local-worker-kit/templates/project/{AGENTS.md,agents,KICKOFF_PROM
 워커 세션 하나는 받은 메시지를 **순서대로** 처리한다. 동시에 세 작업을 돌리려면 워커를 세 개 띄운다.
 
 ```bash
-claude-duo -w 3          # 워커 이름: llm-worker-1, llm-worker-2, llm-worker-3
+claude-duo -w 3          # 기본 워커 3개: llm-worker-1, llm-worker-2, llm-worker-3
+claude-duo -w 2 -P 27b   # 기본 워커 2개 + 27b 워커 1개
 ```
 
 오케스트레이터에서 `Ask @llm-worker-1 to …`, `Ask @llm-worker-2 to …` 로 나눠 보낸다.
 수동으로 띄우려면 터미널마다 `CLAUDE_WORKER_NAME=llm-worker-2 claude-worker`.
+서버의 동시 슬롯은 4개(`--parallel 4`)라 연구실 전체에서 동시에 도는 워커 수가 그 이상이면 요청이 줄을 선다.
 오케스트레이터에서 `/peers` 를 치면 지금 연결 가능한 워커 목록이 보인다.
 
 ### 세션 이어 가기
@@ -174,13 +192,13 @@ claude-worker -r llm-worker      # 워커도 마찬가지
 ## 6. 설정 변경
 
 ```bash
-nano ~/.config/claude-worker/env                  # 서버·모델·토큰·컨텍스트 창·원격 노드
-~/claude-local-worker-kit/install.sh --render     # 워커 프롬프트 재생성
-llm-probe                                         # 재점검
+nano ~/.config/claude-worker/env                  # 기본 워커 (env.27b 는 27b 워커)
+~/claude-local-worker-kit/install.sh --render     # 모든 프로필의 워커 프롬프트 재생성
+llm-probe && llm-probe -P 27b                     # 재점검
 ```
 
 설정 키 설명은 `config/worker.env.example` 에 있다. 서버를 바꿀 때는 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-세 줄만 고치면 된다.
+세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>`.
 
 ## 7. 서버가 Anthropic API 를 지원하지 않을 때
 
@@ -195,7 +213,7 @@ LiteLLM 프록시를 띄우고 `LLM_BASE_URL` 을 프록시 주소로 바꾼다.
 ## 파일 구성
 
 ```
-install.sh / uninstall.sh      설치·제거 (--render: 프롬프트만 재생성)
+install.sh / uninstall.sh      설치·제거 (--profile NAME: 두 번째 모델 워커, --render: 프롬프트만 재생성)
 bin/                           실행기·점검·원격 스크립트
 config/worker.env.example      설정 키 설명
 prompts/*.tmpl                 워커 시스템 프롬프트 템플릿

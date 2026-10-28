@@ -1,15 +1,24 @@
 #!/usr/bin/env bash
 # claude-worker — 로컬 LLM 서버에 연결된 Claude Code 워커 세션.
-# 설정: ~/.config/claude-worker/env  (install.sh 가 생성)
+# 사용: claude-worker [-P 프로필] [claude 인자...]
+#   설정: ~/.config/claude-worker/env            (기본 프로필)
+#         ~/.config/claude-worker/env.<프로필>    (-P <프로필>, 예: -P 27b)
+#   install.sh 가 생성한다. 프로필마다 다른 서버·모델·워커 이름을 둘 수 있다.
 set -euo pipefail
 
 CONF_DIR="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}"
-ENV_FILE="$CONF_DIR/env"
-PROMPT_FILE="$CONF_DIR/worker.md"
+PROFILE="${CLAUDE_WORKER_PROFILE:-}"
+if [ "${1:-}" = "-P" ] || [ "${1:-}" = "--profile" ]; then
+    [ -n "${2:-}" ] || { echo "claude-worker: -P 다음에 프로필 이름이 필요합니다" >&2; exit 2; }
+    PROFILE="$2"; shift 2
+fi
+ENV_FILE="$CONF_DIR/env${PROFILE:+.$PROFILE}"
+PROMPT_FILE="$CONF_DIR/worker${PROFILE:+.$PROFILE}.md"
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "claude-worker: 설정 파일이 없습니다: $ENV_FILE" >&2
-    echo "  install.sh 를 먼저 실행하세요." >&2
+    if [ -n "$PROFILE" ]; then echo "  install.sh --profile $PROFILE 로 만드세요." >&2
+    else echo "  install.sh 를 먼저 실행하세요." >&2; fi
     exit 2
 fi
 # shellcheck disable=SC1090
@@ -19,7 +28,7 @@ source "$ENV_FILE"
 : "${LLM_API_KEY:?LLM_API_KEY 가 비어 있습니다 ($ENV_FILE)}"
 : "${LLM_MODEL:?LLM_MODEL 이 비어 있습니다 ($ENV_FILE)}"
 # 셸의 CLAUDE_WORKER_NAME 이 설정 파일의 WORKER_NAME 보다 우선한다 (워커를 여러 개 띄울 때).
-WORKER_NAME="${CLAUDE_WORKER_NAME:-${WORKER_NAME:-llm-worker}}"
+WORKER_NAME="${CLAUDE_WORKER_NAME:-${WORKER_NAME:-llm-worker${PROFILE:+-$PROFILE}}}"
 
 case "$LLM_BASE_URL" in
     */v1|*/v1/) echo "claude-worker: LLM_BASE_URL 끝의 /v1 을 떼세요 (Claude Code 가 /v1/messages 를 붙입니다): $LLM_BASE_URL" >&2; exit 2 ;;
@@ -30,7 +39,7 @@ if [ -f "$PROMPT_FILE" ]; then
     APPEND=(--append-system-prompt "$(cat "$PROMPT_FILE")")
 fi
 
-# 모든 모델 계층(opus/sonnet/haiku, 서브에이전트)을 같은 로컬 모델로 묶는다.
+# 모든 모델 계층(opus/sonnet/haiku/fable, 서브에이전트)을 같은 로컬 모델로 묶는다.
 # 그래야 제목 생성 등 백그라운드 호출이 서버가 모르는 모델명으로 나가지 않는다.
 exec env \
   -u ANTHROPIC_API_KEY \

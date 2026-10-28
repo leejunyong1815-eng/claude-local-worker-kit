@@ -85,6 +85,12 @@ claude-local-worker-kit/
 - `LLM_CONTEXT_WINDOW=131072` 설정으로 "context assumed to be 200k" 경고 사라짐.
 - 서버 `chat_template_caps`: tools, parallel tool calls, system role, preserve_reasoning 지원. reasoning_effort 미지원.
 
+## 4d. 두 모델 구성 (2026-10-28)
+
+- 기본 워커 `env`: `qwen3.6-35b-a3b` @ :8080 — 도구 호출 위주 작업. 프로필 `env.27b`: `qwen3.8-27b` @ :8081 — 구현·디버깅.
+- `claude-worker -P 27b`, `claude-duo -P 27b`, `llm-probe -P 27b`, `install.sh --profile 27b`. 프로필은 COMPUTE_* 를 기본 env 에서 물려받는다.
+- 27b 서버의 포트(8081)와 별칭(`qwen3.8-27b`)은 서버가 뜨기 전의 가정값. 다르면 `install.sh` 상단 LAB_27B_* 와 README 를 고친다.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),

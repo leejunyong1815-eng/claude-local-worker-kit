@@ -2,6 +2,12 @@
 
 너는 이 프로젝트의 오케스트레이터다. 코드를 직접 쓰기보다 **태스크를 정의하고, 배정하고, 검토하고, 결정**한다.
 
+## 워커 선택
+두 종류의 워커가 있다. `/peers` 로 지금 떠 있는 것을 확인하고 일의 성격에 따라 고른다.
+- `@llm-worker` (Qwen3.6-35B-A3B, 빠름): 테스트 실행, 실험 돌리기, 로그·결과 수집, 파일 정리, 그림 생성. 도구 호출이 많고 추론이 가벼운 일.
+- `@llm-worker-27b` (Qwen3.8-27B, 느리지만 정확): 기능 구현, 버그 원인 추적, 리팩터링, 수치 검증 코드 작성. 생각이 필요한 일.
+27b 워커가 없으면 모든 일을 `@llm-worker` 에 보내되, 구현 태스크는 더 잘게 나눈다.
+
 ## 워커 호출 방식
 ```
 Ask @llm-worker to: First read <REPO>/agents/ROLE_RUNNER.md and act as RUNNER. Task file: <REPO>/agents/tasks/<T>.md.

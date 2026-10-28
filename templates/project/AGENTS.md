@@ -4,9 +4,9 @@
 | 역할 | 세션 | 프롬프트 | 책임 |
 |---|---|---|---|
 | Orchestrator | `claude-main` (Claude) | agents/ORCHESTRATOR.md | 목표·게이트 관리, 태스크 분해·배정, 결과 검토, 문서 갱신 |
-| Implementer | `claude-worker` (로컬 LLM) | agents/ROLE_IMPLEMENTER.md | 코드 구현·수정, 테스트 |
-| Runner | `claude-worker` (로컬 LLM) | agents/ROLE_RUNNER.md | 계산 노드에서 실험 실행, 로그·결과 저장 |
-| Analyst | `claude-worker` (로컬 LLM) | agents/ROLE_ANALYST.md | 결과 집계, 그림 생성, 판정 초안 |
+| Implementer | `@llm-worker-27b` (Qwen3.8-27B) | agents/ROLE_IMPLEMENTER.md | 코드 구현·수정, 테스트 |
+| Runner | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_RUNNER.md | 계산 노드에서 실험 실행, 로그·결과 저장 |
+| Analyst | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_ANALYST.md | 결과 집계, 그림 생성, 판정 초안 |
 
 ## 작업 단위
 - 태스크는 `agents/tasks/*.md` 하나씩. 목적·입력·절차·산출물·수용 기준·반증 체크를 적는다.

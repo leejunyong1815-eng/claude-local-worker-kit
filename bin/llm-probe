@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 # llm-probe — 로컬 LLM 서버가 Claude Code 에 필요한 Anthropic Messages API 를 제공하는지 점검.
 # 사용: llm-probe                 (~/.config/claude-worker/env 사용)
+#       llm-probe -P 27b          (프로필 env.27b 사용)
 #       llm-probe URL MODEL [KEY] (설정 파일 없이 직접 지정)
 #       llm-probe --models        (모델 목록만)
 set -uo pipefail
 
-CONF="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}/env"
-ONLY_MODELS=0
-if [ "${1:-}" = "--models" ]; then ONLY_MODELS=1; shift; fi
+PROFILE=""; ONLY_MODELS=0
+while :; do
+    case "${1:-}" in
+        --models) ONLY_MODELS=1; shift ;;
+        -P|--profile) PROFILE="$2"; shift 2 ;;
+        *) break ;;
+    esac
+done
+CONF="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}/env${PROFILE:+.$PROFILE}"
 
 if [ $# -ge 2 ]; then
     LLM_BASE_URL="$1"; LLM_MODEL="$2"; LLM_API_KEY="${3:-none}"

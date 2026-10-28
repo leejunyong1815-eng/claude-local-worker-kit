@@ -38,6 +38,19 @@ t grep -q 'No remote compute node is configured' "$TMP/conf/worker.md"
 tn grep -q 'remote-run' "$TMP/conf/worker.md"
 tn "$TMP/bin/remote-sync"                                             # COMPUTE_HOST 비어 있음 → 종료 2
 
+echo "4b) 프로필 (env.27b) 생성·상속·렌더링"
+printf 'export LLM_BASE_URL="http://127.0.0.1:9"\nexport LLM_API_KEY=k\nexport LLM_MODEL=m\nexport WORKER_NAME=w1\nexport COMPUTE_HOST="nodeX"\nexport COMPUTE_WORK_DIR="wd"\nexport COMPUTE_DESC="GPU"\n' > "$TMP/conf/env"
+t env LLM_BASE_URL="http://127.0.0.1:9" LLM_MODEL="m27" PREFIX="$TMP/bin" "$KIT/install.sh" --profile 27b --non-interactive --skip-probe --prefix "$TMP/bin"
+t test -f "$TMP/conf/env.27b"
+t grep -q 'LLM_MODEL="m27"' "$TMP/conf/env.27b"
+t grep -q 'WORKER_NAME="llm-worker-27b"' "$TMP/conf/env.27b"
+t grep -q 'COMPUTE_HOST="nodeX"' "$TMP/conf/env.27b"                  # 기본 env 에서 상속
+t grep -q 'Ask @llm-worker-27b to' "$TMP/conf/worker.27b.md"
+t grep -q 'local model `m27`' "$TMP/conf/worker.27b.md"
+t env LLM_BASE_URL="http://127.0.0.1:9" LLM_MODEL="m" FORCE_ENV=1 PREFIX="$TMP/bin" "$KIT/install.sh" --render
+t grep -q 'local model `m27`' "$TMP/conf/worker.27b.md"
+tn "$TMP/bin/claude-worker" -P nope                                     # 없는 프로필 → 종료 2
+
 echo "5) /v1 접미사 거부"
 printf 'export LLM_BASE_URL="http://x/v1"\nexport LLM_API_KEY=k\nexport LLM_MODEL=m\n' > "$TMP/conf/env"
 tn "$TMP/bin/claude-worker"
@@ -46,5 +59,6 @@ echo "6) 제거"
 t "$KIT/uninstall.sh" --prefix "$TMP/bin" --purge
 tn test -e "$TMP/bin/claude-worker"
 tn test -e "$TMP/conf"
+tn test -e "$TMP/conf/env.27b"
 
 echo; echo "PASS=$PASS FAIL=$FAIL"; [ $FAIL -eq 0 ]
