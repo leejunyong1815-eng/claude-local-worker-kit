@@ -120,7 +120,11 @@ claude-local-worker-kit/
 - 동시 20개(2k 프롬프트, 300 생성): 전부 성공, 지연 11.5/12.9/17.1초(min/median/max), 16개가 먼저 끝나고 4개가 뒤에 → GB10 엔진 동시 슬롯 16개로 추정.
   동시 20개(thinking off, 120 생성): 전부 성공·정답 20/20, 지연 3.1/4.6/5.1초. 동시 40개(200 생성): 전부 성공·정답 40/40, 지연 4.0/17.8/25.4초, 합계 약 270~330 tok/s.
 - 세 번 모두 LLM 서버 llama.cpp 의 `prompt_tokens_total` 변화 0, 슬롯 점유 0 → **Vega 배포는 트래픽을 전혀 받지 않는다**(GB10 이 꽉 차도 대기열로 처리).
-  라우팅 정책(가중치 또는 latency 기반)이 원인으로 보임. 관리자에게: Vega 를 같은 이름의 배포로 두기보다 `fallbacks` 로 두거나 별도 이름으로 빼는 편이 명확.
+- 재시험(같은 날, llama.cpp `--parallel 16` 으로 재기동 후): 20/20/40 전부 성공·정답, 지연 중앙값 13.0/9.6/18.9초, 역시 Vega 0건.
+  순차 단건 12+10+10건도 Vega 0건. `/router/settings`: `simple-shuffle`, `allowed_fails 3`, `cooldown_time 5`, `enable_pre_call_checks true`.
+  **원인 = `litellm_params.order`**: GB10 배포 `order: 1`, Vega `order: 2`. LiteLLM 은 order 가 낮은 배포가 건강하면 그것만 쓰고
+  실패·쿨다운 때만 다음 order 로 넘어간다. 즉 Vega 는 의도된 **대기(fallback) 노드**이고, 40 동시 요청까지는 GB10 혼자 처리한다.
+  LiteLLM 의 `/health` 는 Vega 에 실제 요청을 보낸다(llama.cpp 카운터 +16) → 장애 전환 경로는 살아 있음. 실제 전환은 관리자가 GB10 터널을 잠시 내려 확인하면 된다.
 
 ## 5. 미결 사항 (사용자 확인 필요)
 
