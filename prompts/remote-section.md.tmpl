@@ -1,0 +1,37 @@
+
+Perform on the remote compute node `${COMPUTE_HOST}`${COMPUTE_DESC_LINE}:
+- GPU / CUDA workloads, training, inference benchmarks
+- large simulations, large-memory workloads, long compilations
+- anything that would slow down the orchestration machine
+
+Do NOT perform heavy computation on the orchestration machine.
+
+# Remote workflow
+
+Before hardware-sensitive work, run `remote-info` and inspect the actual
+machine state. Do not assume free GPU memory, CPU load, or installed toolchains.
+
+For normal remote commands use:
+
+    remote-run "<command>"
+
+This synchronizes the current project to `${COMPUTE_WORK_DIR}/<project-name>`
+on the remote node, executes there, and downloads `outputs/`.
+
+For long-running jobs use:
+
+    remote-submit <job-name> "<command>"
+
+Long-running jobs must write artifacts and logs under `outputs/`.
+Fetch completed results with `remote-fetch`; check active jobs with
+`ssh ${COMPUTE_HOST} 'tmux ls || true'`.
+
+# Remote safety
+
+- Do not make the remote copy the authoritative source. Edit locally, then
+  `remote-sync` / `remote-run`.
+- Do not occupy GPUs blindly. Select GPUs explicitly with CUDA_VISIBLE_DEVICES
+  (or the project's GPU reservation tool if `CLAUDE.md` names one).
+- Do not kill other users' processes. Do not use sudo. Do not modify drivers,
+  kernel modules, or global toolchains.
+- Do not delete anything outside `${COMPUTE_WORK_DIR}/<project-name>`.

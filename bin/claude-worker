@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# claude-worker — 로컬 LLM 서버에 연결된 Claude Code 워커 세션.
+# 설정: ~/.config/claude-worker/env  (install.sh 가 생성)
+set -euo pipefail
+
+CONF_DIR="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}"
+ENV_FILE="$CONF_DIR/env"
+PROMPT_FILE="$CONF_DIR/worker.md"
+
+if [ ! -f "$ENV_FILE" ]; then
+    echo "claude-worker: 설정 파일이 없습니다: $ENV_FILE" >&2
+    echo "  install.sh 를 먼저 실행하세요." >&2
+    exit 2
+fi
+# shellcheck disable=SC1090
+source "$ENV_FILE"
+
+: "${LLM_BASE_URL:?LLM_BASE_URL 이 비어 있습니다 ($ENV_FILE)}"
+: "${LLM_API_KEY:?LLM_API_KEY 가 비어 있습니다 ($ENV_FILE)}"
+: "${LLM_MODEL:?LLM_MODEL 이 비어 있습니다 ($ENV_FILE)}"
+WORKER_NAME="${WORKER_NAME:-llm-worker}"
+
+case "$LLM_BASE_URL" in
+    */v1|*/v1/) echo "claude-worker: LLM_BASE_URL 끝의 /v1 을 떼세요 (Claude Code 가 /v1/messages 를 붙입니다): $LLM_BASE_URL" >&2; exit 2 ;;
+esac
+
+APPEND=()
+if [ -f "$PROMPT_FILE" ]; then
+    APPEND=(--append-system-prompt "$(cat "$PROMPT_FILE")")
+fi
+
+# 모든 모델 계층(opus/sonnet/haiku, 서브에이전트)을 같은 로컬 모델로 묶는다.
+# 그래야 제목 생성 등 백그라운드 호출이 서버가 모르는 모델명으로 나가지 않는다.
+exec env \
+  -u ANTHROPIC_API_KEY \
+  -u CLAUDE_CODE_USE_BEDROCK \
+  -u CLAUDE_CODE_USE_VERTEX \
+  -u CLAUDE_CODE_USE_FOUNDRY \
+  ANTHROPIC_BASE_URL="$LLM_BASE_URL" \
+  ANTHROPIC_AUTH_TOKEN="$LLM_API_KEY" \
+  ANTHROPIC_MODEL="$LLM_MODEL" \
+  ANTHROPIC_DEFAULT_OPUS_MODEL="$LLM_MODEL" \
+  ANTHROPIC_DEFAULT_SONNET_MODEL="$LLM_MODEL" \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL="$LLM_MODEL" \
+  ANTHROPIC_DEFAULT_FABLE_MODEL="$LLM_MODEL" \
+  CLAUDE_CODE_SUBAGENT_MODEL="$LLM_MODEL" \
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 \
+  CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS="${LLM_DISABLE_BETAS:-1}" \
+  DISABLE_PROMPT_CACHING="${LLM_DISABLE_PROMPT_CACHING:-0}" \
+  ${LLM_MAX_THINKING_TOKENS:+MAX_THINKING_TOKENS="$LLM_MAX_THINKING_TOKENS"} \
+  ${LLM_CONTEXT_WINDOW:+CLAUDE_CODE_MAX_CONTEXT_TOKENS="$LLM_CONTEXT_WINDOW"} \
+  ${LLM_CAPABILITIES:+ANTHROPIC_DEFAULT_OPUS_MODEL_SUPPORTED_CAPABILITIES="$LLM_CAPABILITIES"} \
+  ${LLM_CAPABILITIES:+ANTHROPIC_DEFAULT_SONNET_MODEL_SUPPORTED_CAPABILITIES="$LLM_CAPABILITIES"} \
+  ${LLM_CAPABILITIES:+ANTHROPIC_DEFAULT_HAIKU_MODEL_SUPPORTED_CAPABILITIES="$LLM_CAPABILITIES"} \
+  ${LLM_CAPABILITIES:+ANTHROPIC_DEFAULT_FABLE_MODEL_SUPPORTED_CAPABILITIES="$LLM_CAPABILITIES"} \
+  ANTHROPIC_DEFAULT_OPUS_MODEL_NAME="$LLM_MODEL (local)" \
+  claude \
+    --model "$LLM_MODEL" \
+    --name "$WORKER_NAME" \
+    --settings '{"crossSessionInbound":"accept"}' \
+    "${APPEND[@]}" \
+    "$@"

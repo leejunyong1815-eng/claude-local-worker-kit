@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# remote-info — 원격 계산 노드의 CPU/RAM/GPU/디스크 현황.
+set -euo pipefail
+# shellcheck disable=SC1091
+source "$(dirname "$(readlink -f "$0")")/remote-common.sh"
+"${SSH[@]}" '
+echo "===== COMPUTE NODE ====="; echo "Host: $(hostname)  User: $(whoami)  Kernel: $(uname -r)"
+echo; echo "===== CPU ====="; lscpu | grep -E "Model name|Socket|Core|Thread|^CPU\(s\)" || true
+echo; echo "===== MEMORY ====="; free -h
+echo; echo "===== NVIDIA ====="; nvidia-smi -L 2>/dev/null || echo "(nvidia-smi 없음)"
+nvidia-smi --query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu --format=csv 2>/dev/null || true
+echo; echo "===== GPU PROCESSES ====="; nvidia-smi --query-compute-apps=gpu_uuid,pid,used_memory --format=csv 2>/dev/null || true
+echo; echo "===== STORAGE ====="; df -hT / "$HOME" 2>/dev/null || true
+echo; echo "===== TMUX JOBS ====="; tmux ls 2>/dev/null || echo "(없음)"
+'

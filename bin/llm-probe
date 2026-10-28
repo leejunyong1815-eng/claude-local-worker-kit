@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# llm-probe — 로컬 LLM 서버가 Claude Code 에 필요한 Anthropic Messages API 를 제공하는지 점검.
+# 사용: llm-probe                 (~/.config/claude-worker/env 사용)
+#       llm-probe URL MODEL [KEY] (설정 파일 없이 직접 지정)
+#       llm-probe --models        (모델 목록만)
+set -uo pipefail
+
+CONF="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}/env"
+ONLY_MODELS=0
+if [ "${1:-}" = "--models" ]; then ONLY_MODELS=1; shift; fi
+
+if [ $# -ge 2 ]; then
+    LLM_BASE_URL="$1"; LLM_MODEL="$2"; LLM_API_KEY="${3:-none}"
+elif [ -f "$CONF" ]; then
+    # shellcheck disable=SC1090
+    source "$CONF"
+else
+    echo "사용법: llm-probe [--models] [URL MODEL [KEY]]   (또는 $CONF 작성)" >&2; exit 2
+fi
+LLM_BASE_URL="${LLM_BASE_URL%/}"
+LLM_API_KEY="${LLM_API_KEY:-none}"
+TIMEOUT="${LLM_PROBE_TIMEOUT:-60}"
+
+H=(-H "content-type: application/json" -H "anthropic-version: 2023-06-01"
+   -H "Authorization: Bearer $LLM_API_KEY" -H "x-api-key: $LLM_API_KEY")
+FAIL=0; WARN=0
+ok()   { printf '  [OK]   %s\n' "$*"; }
+warn() { printf '  [WARN] %s\n' "$*"; WARN=$((WARN+1)); }
+bad()  { printf '  [FAIL] %s\n' "$*"; FAIL=$((FAIL+1)); }
+# post PATH JSON — 일시적 오류(요청 한도·5xx)면 5초 뒤 한 번 재시도
+post() {
+    local path="$1" body="$2" out
+    out="$(curl -s -m "$TIMEOUT" "${H[@]}" "$LLM_BASE_URL$path" -d "$body")"
+    if printf '%s' "$out" | grep -qiE 'rate ?limit|limit exceeded|overloaded|"code": ?5[0-9][0-9]|502 Bad Gateway|503'; then
+        printf '         (일시적 오류, 5초 후 재시도)\n' >&2; sleep 5
+        out="$(curl -s -m "$TIMEOUT" "${H[@]}" "$LLM_BASE_URL$path" -d "$body")"
+    fi
+    printf '%s' "$out"
+}
+jget() { python3 -c 'import sys,json
+try: d=json.load(sys.stdin)
+except Exception: print(""); sys.exit(0)
+for k in sys.argv[1].split("."):
+    try: d=d[int(k)] if isinstance(d,list) else d.get(k,"")
+    except Exception: d=""
+print(d if isinstance(d,str) else json.dumps(d))' "$1"; }
+
+echo "서버 : $LLM_BASE_URL"
+echo "모델 : ${LLM_MODEL:-?}"
+echo
+
+echo "1) GET /v1/models"
+RESP="$(curl -s -m "$TIMEOUT" "${H[@]}" "$LLM_BASE_URL/v1/models")" ; RC=$?
+if [ $RC -ne 0 ]; then
+    bad "연결 실패 (curl rc=$RC). 주소·포트·방화벽·ssh 터널 확인."
+    [ $ONLY_MODELS -eq 1 ] && exit 1
+else
+    MODELS="$(printf '%s' "$RESP" | python3 -c 'import sys,json
+try:
+    d=json.load(sys.stdin); print("\n".join(m.get("id","") for m in d.get("data",[])))
+except Exception: pass')"
+    if [ -n "$MODELS" ]; then
+        ok "모델 목록:"; printf '%s\n' "$MODELS" | sed 's/^/         - /'
+        if [ -n "${LLM_MODEL:-}" ] && ! printf '%s\n' "$MODELS" | grep -qx "$LLM_MODEL"; then
+            warn "LLM_MODEL='$LLM_MODEL' 이 목록에 없다. 이름 확인."
+        fi
+    else
+        warn "모델 목록을 못 읽음 (Ollama 등 일부 서버는 /v1/models 미제공). 응답: $(printf '%s' "$RESP" | head -c 160)"
+    fi
+fi
+[ $ONLY_MODELS -eq 1 ] && exit 0
+[ -z "${LLM_MODEL:-}" ] && { bad "LLM_MODEL 미지정"; exit 1; }
+
+echo "2) POST /v1/messages (비스트리밍)"
+RESP="$(post "/v1/messages" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":32,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PONG\"}]}")"
+TYPE="$(printf '%s' "$RESP" | jget type)"
+if [ "$TYPE" = "message" ]; then
+    ok "응답 type=message, stop_reason=$(printf '%s' "$RESP" | jget stop_reason), text=$(printf '%s' "$RESP" | jget content.0.text | head -c 60)"
+    MESSAGES_OK=1
+else
+    bad "Anthropic Messages 응답이 아님: $(printf '%s' "$RESP" | head -c 200)"
+    MESSAGES_OK=0
+fi
+
+echo "3) POST /v1/messages (스트리밍 SSE)"
+RESP="$(curl -s -m "$TIMEOUT" -N "${H[@]}" "$LLM_BASE_URL/v1/messages" -d "{\"model\":\"$LLM_MODEL\",\"max_tokens\":32,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"Reply with exactly: PONG\"}]}")"
+if printf '%s' "$RESP" | grep -q "message_start" && printf '%s' "$RESP" | grep -q "message_stop"; then
+    ok "message_start … message_stop 수신"
+else
+    bad "SSE 스트림 이상: $(printf '%s' "$RESP" | head -c 200)"
+fi
+
+echo "4) tool_use (함수 호출)"
+RESP="$(post "/v1/messages" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":256,\"tools\":[{\"name\":\"get_time\",\"description\":\"Return the current time for a timezone\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"tz\":{\"type\":\"string\"}},\"required\":[\"tz\"]}}],\"messages\":[{\"role\":\"user\",\"content\":\"Use the get_time tool to get the time in Asia/Seoul.\"}]}")"
+if printf '%s' "$RESP" | grep -q '"tool_use"'; then
+    ok "tool_use 블록 반환 (stop_reason=$(printf '%s' "$RESP" | jget stop_reason))"
+else
+    bad "도구 호출 없음. Claude Code 는 도구 호출 없이는 동작하지 않는다. 응답: $(printf '%s' "$RESP" | head -c 200)"
+fi
+
+echo "5) system + 멀티턴 + tool_result 왕복"
+RESP="$(post "/v1/messages" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":64,\"system\":\"You are terse.\",\"messages\":[{\"role\":\"user\",\"content\":\"time in Seoul?\"},{\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_01\",\"name\":\"get_time\",\"input\":{\"tz\":\"Asia/Seoul\"}}]},{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_01\",\"content\":\"12:00\"}]}],\"tools\":[{\"name\":\"get_time\",\"description\":\"time\",\"input_schema\":{\"type\":\"object\",\"properties\":{\"tz\":{\"type\":\"string\"}}}}]}")"
+if [ "$(printf '%s' "$RESP" | jget type)" = "message" ]; then ok "tool_result 포함 대화 처리됨"; else bad "tool_result 왕복 실패: $(printf '%s' "$RESP" | head -c 200)"; fi
+
+echo "6) cache_control (prompt caching 필드)"
+RESP="$(post "/v1/messages" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":16,\"system\":[{\"type\":\"text\",\"text\":\"You are terse.\",\"cache_control\":{\"type\":\"ephemeral\"}}],\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")"
+if [ "$(printf '%s' "$RESP" | jget type)" = "message" ]; then ok "cache_control 허용"; else warn "cache_control 거부 → env 에 LLM_DISABLE_PROMPT_CACHING=1 설정. 응답: $(printf '%s' "$RESP" | head -c 160)"; fi
+
+echo "7) thinking 필드"
+RESP="$(post "/v1/messages" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":2048,\"thinking\":{\"type\":\"enabled\",\"budget_tokens\":1024},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")"
+if [ "$(printf '%s' "$RESP" | jget type)" = "message" ]; then ok "thinking 필드 허용"; else warn "thinking 필드 거부 → env 에 LLM_MAX_THINKING_TOKENS=0 설정. 응답: $(printf '%s' "$RESP" | head -c 160)"; fi
+
+echo "8) POST /v1/messages/count_tokens (선택)"
+RESP="$(post "/v1/messages/count_tokens" "{\"model\":\"$LLM_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")"
+if [ -n "$(printf '%s' "$RESP" | jget input_tokens)" ]; then ok "count_tokens 지원"; else warn "count_tokens 미지원 (선택 기능, /context 가 추정치를 씀)"; fi
+
+echo
+if [ "$MESSAGES_OK" -eq 0 ]; then
+    echo "9) OpenAI /v1/chat/completions 로 폴백 가능한지"
+    RESP="$(post "/v1/chat/completions" "{\"model\":\"$LLM_MODEL\",\"max_tokens\":16,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}")"
+    if printf '%s' "$RESP" | grep -q '"choices"'; then
+        echo "  → OpenAI 형식은 동작한다. proxy/ 의 LiteLLM 으로 감싸고 LLM_BASE_URL 을 프록시 주소로 바꾼다."
+    else
+        echo "  → OpenAI 형식도 실패. 서버 상태를 확인한다."
+    fi
+fi
+
+echo "결과: FAIL=$FAIL WARN=$WARN"
+if [ $FAIL -eq 0 ]; then echo "판정: 직접 연결 가능. claude-worker 를 실행해도 된다."; exit 0
+else echo "판정: 그대로는 쓸 수 없다. 위 FAIL 항목을 해결하거나 proxy/ 를 쓴다."; exit 1; fi

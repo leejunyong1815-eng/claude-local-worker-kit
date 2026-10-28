@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# claude-duo — tmux 한 창에 오케스트레이터(왼쪽) + 로컬 LLM 워커(오른쪽)를 띄운다.
+# 사용: claude-duo [프로젝트 디렉터리]     (기본: 현재 디렉터리)
+#       claude-duo --kill                  세션 종료
+set -euo pipefail
+
+SESSION="${CLAUDE_DUO_SESSION:-claude-duo}"
+
+if [ "${1:-}" = "--kill" ]; then
+    tmux kill-session -t "$SESSION" 2>/dev/null && echo "종료: $SESSION" || echo "세션 없음: $SESSION"
+    exit 0
+fi
+
+DIR="${1:-$PWD}"
+DIR="$(cd "$DIR" && pwd)"
+
+if ! command -v tmux >/dev/null 2>&1; then
+    echo "tmux 가 필요합니다 (sudo apt install tmux)." >&2
+    exit 2
+fi
+
+if tmux has-session -t "$SESSION" 2>/dev/null; then
+    echo "이미 실행 중: tmux attach -t $SESSION"
+    exec tmux attach -t "$SESSION"
+fi
+
+tmux new-session -d -s "$SESSION" -c "$DIR" -n main "claude-main; exec bash"
+tmux split-window -h -t "$SESSION:main" -c "$DIR" "claude-worker; exec bash"
+tmux select-pane -t "$SESSION:main.0"
+exec tmux attach -t "$SESSION"

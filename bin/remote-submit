@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# remote-submit JOB_NAME "<command>" — 원격 tmux 세션에서 장시간 작업 실행. 로그는 outputs/<JOB>.log.
+set -euo pipefail
+[ "$#" -ge 2 ] || { echo 'Usage: remote-submit JOB_NAME "command"' >&2; exit 2; }
+JOB="$1"; shift; CMD="$*"
+[[ "$JOB" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid job name: $JOB" >&2; exit 2; }
+# shellcheck disable=SC1091
+source "$(dirname "$(readlink -f "$0")")/remote-common.sh"
+remote-sync
+"${SSH[@]}" "mkdir -p '$REMOTE_ROOT/.jobs' '$REMOTE_ROOT/outputs'"
+{
+    echo '#!/usr/bin/env bash'; echo 'set -o pipefail'
+    printf 'cd %q\n' "$REMOTE_ROOT"; printf '%s\n' "$CMD"
+} | "${SSH[@]}" "cat > '$REMOTE_ROOT/.jobs/$JOB.sh' && chmod +x '$REMOTE_ROOT/.jobs/$JOB.sh'"
+"${SSH[@]}" "
+    if tmux has-session -t '$JOB' 2>/dev/null; then echo 'tmux session already exists: $JOB'; exit 1; fi
+    tmux new-session -d -s '$JOB' \"bash '$REMOTE_ROOT/.jobs/$JOB.sh' > '$REMOTE_ROOT/outputs/$JOB.log' 2>&1\"
+    echo 'Started: $JOB'; echo 'Log: $REMOTE_ROOT/outputs/$JOB.log'
+    echo 'Status: ssh $COMPUTE_HOST tmux ls ; fetch: remote-fetch'
+"

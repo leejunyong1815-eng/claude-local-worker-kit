@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# remote-fetch — 원격 outputs/ 를 로컬 outputs/ 로 내려받는다.
+set -euo pipefail
+# shellcheck disable=SC1091
+source "$(dirname "$(readlink -f "$0")")/remote-common.sh"
+mkdir -p "$ROOT/outputs"
+rsync -az "$COMPUTE_HOST:$REMOTE_ROOT/outputs/" "$ROOT/outputs/"
+echo "[remote] outputs downloaded to $ROOT/outputs/"

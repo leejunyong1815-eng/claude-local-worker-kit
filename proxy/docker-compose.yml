@@ -1,0 +1,11 @@
+services:
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: claude-worker-litellm
+    restart: unless-stopped
+    ports:
+      - "${PROXY_PORT:-4000}:4000"
+    env_file: .env
+    volumes:
+      - ./litellm.config.yaml:/app/config.yaml:ro
+    command: ["--config", "/app/config.yaml", "--port", "4000"]

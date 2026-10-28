@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# claude-main — 오케스트레이터 세션(진짜 Claude). 로컬 LLM 쪽 환경변수를 모두 지우고 실행한다.
+set -euo pipefail
+
+NAME="${ORCHESTRATOR_NAME:-orchestrator}"
+
+exec env \
+  -u ANTHROPIC_API_KEY \
+  -u ANTHROPIC_AUTH_TOKEN \
+  -u ANTHROPIC_BASE_URL \
+  -u ANTHROPIC_MODEL \
+  -u ANTHROPIC_DEFAULT_OPUS_MODEL \
+  -u ANTHROPIC_DEFAULT_SONNET_MODEL \
+  -u ANTHROPIC_DEFAULT_HAIKU_MODEL \
+  -u CLAUDE_CODE_SUBAGENT_MODEL \
+  -u CLAUDE_CODE_USE_BEDROCK \
+  -u CLAUDE_CODE_USE_VERTEX \
+  -u CLAUDE_CODE_USE_FOUNDRY \
+  claude \
+    --name "$NAME" \
+    "$@"

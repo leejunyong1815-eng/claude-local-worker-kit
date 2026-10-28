@@ -1,0 +1,15 @@
+# LiteLLM 프록시 설정 — 서버가 OpenAI /v1/chat/completions 만 제공할 때 Anthropic /v1/messages 로 변환.
+# 환경변수: UPSTREAM_BASE_URL (예: http://vllm-host:8000/v1), UPSTREAM_API_KEY, UPSTREAM_MODEL, PROXY_MASTER_KEY
+model_list:
+  - model_name: "os.environ/UPSTREAM_MODEL"       # Claude Code 가 쓰는 이름 (LLM_MODEL 과 같게)
+    litellm_params:
+      model: "openai/os.environ/UPSTREAM_MODEL"   # openai 호환 백엔드
+      api_base: "os.environ/UPSTREAM_BASE_URL"
+      api_key: "os.environ/UPSTREAM_API_KEY"
+
+litellm_settings:
+  drop_params: true          # 백엔드가 모르는 파라미터(thinking, cache_control 등) 제거
+  request_timeout: 600
+
+general_settings:
+  master_key: "os.environ/PROXY_MASTER_KEY"

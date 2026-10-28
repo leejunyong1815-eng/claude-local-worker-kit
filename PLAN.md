@@ -1,0 +1,82 @@
+# PLAN — Claude 오케스트레이터 + 로컬 LLM 워커 배포판
+
+작성: 2026-10-28. 대상: 연구실 구성원. 현재 ljy 환경(`~/bin/claude-glm`, `~/bin/claude-main`,
+`~/bin/drl-*`, `~/.claude/prompts/glm-worker.md`)을 **서버 독립적인 설치 패키지**로 재구성한다.
+
+## 1. 현재 구조 (as-is)
+
+| 구성요소 | 역할 | 문제점 |
+|---|---|---|
+| `claude-main` | 진짜 Claude(Fable)로 오케스트레이터 세션 시작, `--remote-control` | 그대로 써도 됨 |
+| `claude-glm` | 두 번째 Claude Code 프로세스를 GLM 서버(LiteLLM, `133.186.146.224:8081`)에 연결, `--name glm-worker`, `crossSessionInbound: accept` | URL·모델명·토큰 경로가 하드코딩 |
+| `~/.claude/prompts/glm-worker.md` | 워커 시스템 프롬프트 | DRL 노드(A6000×2, FPGA, 계정 jyl)가 하드코딩 |
+| `drl-sync/run/submit/fetch/info` | 원격 GPU 노드에 rsync + ssh 실행 | 호스트 `DRL`, 경로 `/home/jyl/claude-work` 하드코딩 |
+| 프로젝트 `AGENTS.md`, `agents/SUBAGENT_*_GLM.md`, `HANDOFF_TEMPLATE.md` | 역할·보고 양식 | qcfd 프로젝트 전용 내용 포함 |
+| 오케스트레이터 → 워커 위임 | 메인 대화에서 `Ask @glm-worker to ...` | 유지 |
+
+## 2. 목표 구조 (to-be)
+
+```
+claude-local-worker-kit/
+├── install.sh / uninstall.sh      설치·제거 (설정 질문 → ~/.config/claude-worker/env 작성, bin 복사)
+├── config/worker.env.example      LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, WORKER_NAME, COMPUTE_HOST ...
+├── bin/claude-main                오케스트레이터 (변경 없음, ANTHROPIC_* 환경 제거 후 실행)
+├── bin/claude-worker              로컬 LLM 워커 (env 파일에서 서버·모델 읽음)
+├── bin/claude-duo                 tmux 한 창에 오케스트레이터 + 워커 동시 실행
+├── bin/llm-probe                  서버 점검: /v1/models, /v1/messages, 스트리밍, tool_use, count_tokens
+├── bin/remote-{info,sync,run,submit,fetch}   drl-* 일반화 (COMPUTE_HOST / COMPUTE_WORK_DIR)
+├── prompts/worker.md.tmpl         워커 시스템 프롬프트 템플릿 (설치 시 값 치환)
+├── proxy/                         서버가 /v1/messages 를 지원하지 않을 때 쓰는 LiteLLM 프록시
+├── templates/project/             새 프로젝트용 AGENTS.md, 역할 파일, HANDOFF, KICKOFF 템플릿
+├── tests/selftest.sh              문법 검사 + 설정 검사 + 서버 점검
+└── README.md, docs/               설치·사용·문제해결
+```
+
+## 3. 결정 사항
+
+1. **API 형식**: Claude Code는 Anthropic Messages API(`/v1/messages`)만 쓴다. 2026년 현재
+   vLLM, SGLang, llama.cpp, Ollama(≥0.14) 모두 이 엔드포인트를 자체 제공하므로 **기본은 직접 연결**.
+   `llm-probe` 가 실패하면 `proxy/` 의 LiteLLM 으로 감싼다(OpenAI chat/completions → messages 변환).
+2. **모델 계층 매핑**: `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` 을 모두 `LLM_MODEL` 로 묶어
+   백그라운드 호출(제목 생성 등)이 서버가 모르는 모델명으로 가지 않게 한다.
+3. **설정 위치**: `~/.config/claude-worker/env` (0600). 토큰은 여기만. 스크립트에는 값이 없다.
+4. **원격 계산 노드**: 선택 사항. `COMPUTE_HOST` 가 비어 있으면 워커 프롬프트에서 원격 절이 빠진다.
+   채워져 있으면 ssh 별칭 하나로 `remote-*` 가 동작한다. 연구실 서버 목록·GPU 예약 규칙은
+   프로젝트 `CLAUDE.md` 가 담당한다(패키지에 복제하지 않는다).
+5. **크로스 세션 메시징**: 워커는 `--name $WORKER_NAME` + `crossSessionInbound: accept`.
+   같은 머신·같은 사용자에서 두 세션을 띄운다. `claude-duo` 가 tmux 로 이를 한 번에 한다.
+6. **버전 고정**: Claude Code ≥ 2.1.300 (현재 2.1.312) 을 요구한다. `--name`, `--settings`,
+   `--append-system-prompt`, 크로스 세션이 이 범위에서 확인됨.
+
+## 4. 작업 단계
+
+- [x] 현재 구성 수집 및 분석
+- [x] 서버별 Anthropic API 지원 조사 (vLLM/SGLang/llama.cpp/Ollama/LiteLLM)
+- [x] `config/worker.env.example`, `bin/claude-worker`, `bin/claude-main`, `bin/claude-duo`
+- [x] `bin/llm-probe`
+- [x] `bin/remote-*` 일반화
+- [x] `prompts/worker.md.tmpl`
+- [x] `proxy/` (LiteLLM docker-compose + config)
+- [x] `templates/project/`
+- [x] `install.sh`, `uninstall.sh`, `tests/selftest.sh`
+- [x] `README.md`, `docs/TROUBLESHOOTING.md`
+- [x] 자기 환경에서 설치 테스트: 임시 prefix 에 설치, `-p` 응답·Bash 도구 호출·`--bg` 워커에 크로스 세션 메시지 전달까지 GLM 서버로 확인 (2026-10-28)
+- [ ] 새 서버 값으로 `llm-probe` → 워커 종단간 재검증
+- [x] git init (초기 커밋)
+- [ ] 태그, 연구실 공유 경로(`/mnt/148TB/LJY/...`) 또는 git 저장소로 배포
+
+## 4b. 검증 결과 (2026-10-28, GLM 서버 기준)
+
+- `tests/selftest.sh` 31/31 통과.
+- `llm-probe`: 스트리밍·tool_use·tool_result 왕복·thinking·count_tokens OK. 비스트리밍·cache_control 은 GLM 서버의
+  상위 백엔드 요청 한도("Request limit exceeded")로 간헐 실패 → 프로브에 재시도 추가. 기능 미지원 아님.
+- `claude-worker -p` : 일반 응답 OK, `--allowedTools Bash` 로 도구 호출 OK.
+- `claude-worker --bg` 로 띄운 워커가 `ListAgents` 에 보이고 `SendMessage` 로 태스크 전달됨.
+- `remote-info` 가 DRL 노드 현황을 가져옴.
+- 발견: Claude Code 가 모르는 모델은 컨텍스트 200k 가정 → `LLM_CONTEXT_WINDOW` 키 추가 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`).
+
+## 5. 미결 사항 (사용자 확인 필요)
+
+- 새 LLM 서버의 **주소, 포트, 모델명, 인증 방식**. 패키지는 값을 묻도록 만들었다.
+- 서버 종류(vLLM/SGLang/Ollama/LiteLLM). `llm-probe` 결과로 프록시 필요 여부가 정해진다.
+- 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.
