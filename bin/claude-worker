@@ -18,7 +18,8 @@ source "$ENV_FILE"
 : "${LLM_BASE_URL:?LLM_BASE_URL 이 비어 있습니다 ($ENV_FILE)}"
 : "${LLM_API_KEY:?LLM_API_KEY 가 비어 있습니다 ($ENV_FILE)}"
 : "${LLM_MODEL:?LLM_MODEL 이 비어 있습니다 ($ENV_FILE)}"
-WORKER_NAME="${WORKER_NAME:-llm-worker}"
+# 셸의 CLAUDE_WORKER_NAME 이 설정 파일의 WORKER_NAME 보다 우선한다 (워커를 여러 개 띄울 때).
+WORKER_NAME="${CLAUDE_WORKER_NAME:-${WORKER_NAME:-llm-worker}}"
 
 case "$LLM_BASE_URL" in
     */v1|*/v1/) echo "claude-worker: LLM_BASE_URL 끝의 /v1 을 떼세요 (Claude Code 가 /v1/messages 를 붙입니다): $LLM_BASE_URL" >&2; exit 2 ;;

@@ -15,6 +15,7 @@
 
 ## 흐름
 1. Orchestrator 가 태스크를 고르고 수용 기준을 확인한 뒤 워커에 배정: `Ask @llm-worker to ...`
+   (병렬 실행은 워커 수만큼: `claude-duo -w N` → `@llm-worker-1` … `@llm-worker-N`)
 2. 워커는 지시된 역할 파일을 먼저 읽고 수행, 실패 시 규모를 줄여 재시도 후 보고.
 3. Orchestrator 가 검토: 숫자 재검산, 수용 기준 대조, 다음 태스크 결정, 문서 갱신.
 

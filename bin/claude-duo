@@ -1,30 +1,55 @@
 #!/usr/bin/env bash
 # claude-duo — tmux 한 창에 오케스트레이터(왼쪽) + 로컬 LLM 워커(오른쪽)를 띄운다.
-# 사용: claude-duo [프로젝트 디렉터리]     (기본: 현재 디렉터리)
-#       claude-duo --kill                  세션 종료
+# 사용: claude-duo [-w N] [프로젝트 디렉터리]     (기본: 현재 디렉터리, 워커 1개)
+#       -w N, --workers N   워커를 N개 띄운다. 이름은 <WORKER_NAME>-1 … <WORKER_NAME>-N
+#       claude-duo --kill    세션 종료
 set -euo pipefail
 
 SESSION="${CLAUDE_DUO_SESSION:-claude-duo}"
+CONF="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}/env"
+N=1
 
-if [ "${1:-}" = "--kill" ]; then
-    tmux kill-session -t "$SESSION" 2>/dev/null && echo "종료: $SESSION" || echo "세션 없음: $SESSION"
-    exit 0
-fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --kill) tmux kill-session -t "$SESSION" 2>/dev/null && echo "종료: $SESSION" || echo "세션 없음: $SESSION"; exit 0 ;;
+        -w|--workers) N="$2"; shift 2 ;;
+        -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
+        *) DIR="$1"; shift ;;
+    esac
+done
+[[ "$N" =~ ^[1-9][0-9]?$ ]] || { echo "워커 수는 1~99: $N" >&2; exit 2; }
 
-DIR="${1:-$PWD}"
-DIR="$(cd "$DIR" && pwd)"
-
-if ! command -v tmux >/dev/null 2>&1; then
-    echo "tmux 가 필요합니다 (sudo apt install tmux)." >&2
-    exit 2
-fi
+DIR="$(cd "${DIR:-$PWD}" && pwd)"
+command -v tmux >/dev/null 2>&1 || { echo "tmux 가 필요합니다 (sudo apt install tmux)." >&2; exit 2; }
+[ -f "$CONF" ] || { echo "설정 파일이 없습니다: $CONF — install.sh 를 먼저 실행하세요." >&2; exit 2; }
+# shellcheck disable=SC1090
+WORKER_BASE="$(source "$CONF" && printf '%s' "${WORKER_NAME:-llm-worker}")"
 
 if tmux has-session -t "$SESSION" 2>/dev/null; then
-    echo "이미 실행 중: tmux attach -t $SESSION"
+    echo "이미 실행 중: tmux attach -t $SESSION   (끝내려면 claude-duo --kill)"
     exec tmux attach -t "$SESSION"
 fi
 
-tmux new-session -d -s "$SESSION" -c "$DIR" -n main "claude-main; exec bash"
-tmux split-window -h -t "$SESSION:main" -c "$DIR" "claude-worker; exec bash"
+COLS="$(tput cols 2>/dev/null || echo 200)"; LINES="$(tput lines 2>/dev/null || echo 50)"
+[ "$COLS" -ge 120 ] || COLS=200; [ "$LINES" -ge 30 ] || LINES=50
+tmux new-session -d -s "$SESSION" -c "$DIR" -n main -x "$COLS" -y "$LINES" "claude-main; exec bash"
+if [ "$N" -eq 1 ]; then
+    tmux split-window -h -t "$SESSION:main" -c "$DIR" "claude-worker; exec bash"
+    NAMES="@$WORKER_BASE"
+else
+    NAMES=""
+    for i in $(seq 1 "$N"); do
+        name="$WORKER_BASE-$i"; NAMES="$NAMES @$name"
+        if [ "$i" -eq 1 ]; then
+            tmux split-window -h -t "$SESSION:main" -c "$DIR" "CLAUDE_WORKER_NAME=$name claude-worker; exec bash"
+        else
+            tmux split-window -v -t "$SESSION:main" -c "$DIR" "CLAUDE_WORKER_NAME=$name claude-worker; exec bash"
+        fi
+    done
+    tmux set-window-option -t "$SESSION:main" main-pane-width "$((COLS / 2))"
+    tmux select-layout -t "$SESSION:main" main-vertical
+fi
 tmux select-pane -t "$SESSION:main.0"
+echo "워커:$NAMES   (tmux: Ctrl-b 화살표로 창 이동, Ctrl-b d 로 떼기)"
+sleep 1
 exec tmux attach -t "$SESSION"

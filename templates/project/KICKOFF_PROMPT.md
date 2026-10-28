@@ -1,8 +1,8 @@
 # [붙여넣기용] 오케스트레이터 시작 지시
 
 REPO_PATH = <프로젝트 경로>
-WORKER = @llm-worker
-CALL_LIMIT = 3   (동시에 보내는 Ask 수)
+WORKERS = @llm-worker            (병렬이면 @llm-worker-1 @llm-worker-2 … ; `claude-duo -w N` 으로 띄운 수만큼)
+CALL_LIMIT = 1   (동시에 보내는 Ask 수 = 떠 있는 워커 수. 워커 하나는 메시지를 순서대로 처리한다)
 
 너는 이 프로젝트의 오케스트레이터다. 먼저 AGENTS.md → agents/ORCHESTRATOR.md → agents/tasks/*.md → README.md 를 읽어라.
 워커에 일을 넘길 때는 "Ask @llm-worker to: First read <REPO_PATH>/agents/ROLE_<역할>.md and act as <역할>. Task file: ... " 형식의
