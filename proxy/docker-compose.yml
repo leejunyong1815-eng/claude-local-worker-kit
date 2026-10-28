@@ -1,10 +1,10 @@
+# LLM 서버에서:  cd proxy && cp .env.example .env && nano .env && docker compose up -d
 services:
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
-    container_name: claude-worker-litellm
+    container_name: lab-litellm
     restart: unless-stopped
-    ports:
-      - "${PROXY_PORT:-4000}:4000"
+    network_mode: host               # 같은 호스트의 llama.cpp(127.0.0.1:8080)에 바로 붙기 위해. 포트 4000 이 호스트에 열린다
     env_file: .env
     volumes:
       - ./litellm.config.yaml:/app/config.yaml:ro

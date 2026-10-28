@@ -1,15 +1,28 @@
-# LiteLLM 프록시 설정 — 서버가 OpenAI /v1/chat/completions 만 제공할 때 Anthropic /v1/messages 로 변환.
-# 환경변수: UPSTREAM_BASE_URL (예: http://vllm-host:8000/v1), UPSTREAM_API_KEY, UPSTREAM_MODEL, PROXY_MASTER_KEY
+# LiteLLM 게이트웨이 설정 — 연구실 LLM 서버(1.233.219.134)에서 실행. 구성원은 :4000 하나만 바라본다.
+#   백엔드 1: 같은 호스트의 llama.cpp (qwen3.6-35b-a3b, 127.0.0.1:8080)
+#   백엔드 2: GB10 노드 (모델이 올라오면 아래 주석을 풀고 .env 의 GB10_* 를 채운다)
+# 환경변수(.env): PROXY_MASTER_KEY, GB10_BASE_URL, GB10_MODEL, GB10_API_KEY
 model_list:
-  - model_name: "os.environ/UPSTREAM_MODEL"       # Claude Code 가 쓰는 이름 (LLM_MODEL 과 같게)
+  - model_name: qwen3.6-35b-a3b                 # 구성원 env 의 LLM_MODEL
     litellm_params:
-      model: "openai/os.environ/UPSTREAM_MODEL"   # openai 호환 백엔드
-      api_base: "os.environ/UPSTREAM_BASE_URL"
-      api_key: "os.environ/UPSTREAM_API_KEY"
+      model: anthropic/qwen3.6-35b-a3b          # llama.cpp 의 /v1/messages 로 그대로 전달 (사고 블록·프롬프트 캐시 보존)
+      api_base: http://127.0.0.1:8080           # /v1 없이
+      api_key: none
+      # 백엔드가 Anthropic API 를 지원하지 않으면 위 두 줄 대신:  model: openai/<id>,  api_base: http://…/v1  (사고는 버려지고 본문만 전달됨)
+    model_info:
+      max_input_tokens: 32768                   # llama.cpp --ctx-size 131072 / --parallel 4
+
+  # - model_name: gb10                          # ← GB10 모델 이름 (구성원 env 의 LLM_MODEL). install.sh 의 LAB_GB10_MODEL 과 맞춘다
+  #   litellm_params:
+  #     model: "anthropic/os.environ/GB10_MODEL"  # GB10 엔진(llama.cpp/SGLang/vLLM 은 /v1/messages 지원)이 아는 모델 id
+  #     api_base: "os.environ/GB10_BASE_URL"    # 예: http://<gb10-ip>:8000  (/v1 없이. openai/ 로 쓸 때만 /v1 까지)
+  #     api_key: "os.environ/GB10_API_KEY"
+  #   model_info:
+  #     max_input_tokens: 131072                # GB10 엔진의 요청당 컨텍스트와 맞춘다
 
 litellm_settings:
-  drop_params: true          # 백엔드가 모르는 파라미터(thinking, cache_control 등) 제거
-  request_timeout: 600
+  drop_params: true          # 백엔드가 모르는 파라미터(cache_control 등) 제거
+  request_timeout: 900       # 로컬 모델은 느리다. 긴 생성이 끊기지 않게
 
 general_settings:
-  master_key: "os.environ/PROXY_MASTER_KEY"
+  master_key: "os.environ/PROXY_MASTER_KEY"   # 구성원에게 나눠 줄 키 (sk-…). 인증을 안 걸려면 이 두 줄을 지운다

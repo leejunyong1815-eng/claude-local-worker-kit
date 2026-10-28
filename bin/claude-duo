@@ -2,7 +2,7 @@
 # claude-duo — tmux 한 창에 오케스트레이터(왼쪽) + 로컬 LLM 워커(오른쪽)를 띄운다.
 # 사용: claude-duo [-w N] [-P 프로필[,프로필…]] [프로젝트 디렉터리]   (기본: 현재 디렉터리, 기본 워커 1개)
 #       -w N              기본 프로필 워커를 N개. 이름 <WORKER_NAME>-1 … -N  (N=1 이면 <WORKER_NAME>)
-#       -P 27b            프로필 워커를 추가로 하나씩 (env.<프로필> 사용). 예: -P 27b
+#       -P gb10           프로필 워커를 추가로 하나씩 (env.<프로필> 사용). 예: -P gb10
 #       claude-duo --kill 세션 종료
 set -euo pipefail
 

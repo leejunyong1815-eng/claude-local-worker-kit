@@ -2,7 +2,7 @@
 # claude-worker — 로컬 LLM 서버에 연결된 Claude Code 워커 세션.
 # 사용: claude-worker [-P 프로필] [claude 인자...]
 #   설정: ~/.config/claude-worker/env            (기본 프로필)
-#         ~/.config/claude-worker/env.<프로필>    (-P <프로필>, 예: -P 27b)
+#         ~/.config/claude-worker/env.<프로필>    (-P <프로필>, 예: -P gb10)
 #   install.sh 가 생성한다. 프로필마다 다른 서버·모델·워커 이름을 둘 수 있다.
 set -euo pipefail
 

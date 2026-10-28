@@ -85,11 +85,12 @@ claude-local-worker-kit/
 - `LLM_CONTEXT_WINDOW` 설정으로 "context assumed to be 200k" 경고 사라짐. (당시 131072 로 넣었으나 4e 에서 슬롯당 32768 로 정정.)
 - 서버 `chat_template_caps`: tools, parallel tool calls, system role, preserve_reasoning 지원. reasoning_effort 미지원.
 
-## 4d. 두 모델 구성 (2026-10-28)
+## 4d. 프로필(여러 모델) 구성 (2026-10-28)
 
-- 기본 워커 `env`: `qwen3.6-35b-a3b` @ :8080 — 도구 호출 위주 작업. 프로필 `env.27b`: `qwen3.8-27b` @ :8081 — 구현·디버깅.
-- `claude-worker -P 27b`, `claude-duo -P 27b`, `llm-probe -P 27b`, `install.sh --profile 27b`. 프로필은 COMPUTE_* 를 기본 env 에서 물려받는다.
-- 27b 서버의 포트(8081)와 별칭(`qwen3.8-27b`)은 서버가 뜨기 전의 가정값. 다르면 `install.sh` 상단 LAB_27B_* 와 README 를 고친다.
+- 워커 프로필: `env.<이름>` + `worker.<이름>.md`. `claude-worker -P x`, `claude-duo -P x`, `llm-probe -P x`, `install.sh --profile x`.
+  프로필은 COMPUTE_* 를 기본 env 에서 물려받는다.
+- 처음엔 두 번째 모델로 Qwen3.8-27B(:8081, 프로필 `27b`)를 가정했으나 **사용자 결정으로 폐기**(2026-10-28 저녁).
+  대신 LLM 서버에 LiteLLM 게이트웨이를 두고 GB10 노드를 그 뒤에 붙인다 → 4f.
 
 ## 4e. 직접 연결 재검증 (2026-10-28, 서버 `--host 0.0.0.0` 전환 후)
 
@@ -100,6 +101,18 @@ claude-local-worker-kit/
 - `llm-probe http://1.233.219.134:8080 qwen3.6-35b-a3b none` 8/8 OK. 8081 은 아직 닫힘(연결 거부).
 - 사용자 계정은 docker 그룹이 아니라 `docker ps` 불가. 서버 인자는 `ps -eo args | grep llama-server` 로 본다.
 
+## 4f. LiteLLM 게이트웨이 + GB10 (2026-10-28, 사용자 결정)
+
+- 구성원 접속점 = `http://1.233.219.134:4000` (LiteLLM). 백엔드 1 = 같은 호스트 llama.cpp `127.0.0.1:8080` (`qwen3.6-35b-a3b`),
+  백엔드 2 = GB10 노드(모델·주소 미정). `proxy/` 를 관리자용 서버측 설정으로 재작성 (docker compose `network_mode: host`, 또는 pip).
+- 키트 기본값: `LAB_DEFAULT_PORT=4000`, 모델 `qwen3.6-35b-a3b`, 컨텍스트 32768. `LAB_GB10_MODEL`/`LAB_GB10_CTX` 는 등록 후 채움(프로필 `gb10`).
+  템플릿(ORCHESTRATOR/AGENTS/KICKOFF)은 `@llm-worker` 기본 + `@llm-worker-gb10`(있을 때) 로 일반화.
+- 임시 우회: LiteLLM 장애 시 `LLM_BASE_URL=…:8080`, `LLM_API_KEY=none` 으로 llama.cpp 직접 접속 (TROUBLESHOOTING).
+- 검증(2026-10-28~29, 내 PC 에 LiteLLM 1.x venv 로 띄워 연구실 llama.cpp 에 연결, master_key 사용):
+  `anthropic/` 패스스루와 `openai/` 변환 둘 다 `llm-probe` 8/8. 패스스루는 thinking 블록·cache_read_input_tokens 보존,
+  변환 경로는 사고를 버리고 본문만 전달(본문에 `<think>` 누출 없음). `claude-worker -p` Bash 왕복: 변환 2분 47초, 패스스루도 OK.
+  → `proxy/litellm.config.yaml` 기본은 `anthropic/`. LLM 서버는 Python 3.8 이라 pip 설치 불가 → docker compose(network_mode: host).
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
@@ -107,5 +120,6 @@ claude-local-worker-kit/
   외부에서 바로 붙는다 (터널 불필요; 터널 안내는 TROUBLESHOOTING 에 일반 사례로 남김).
   관리자에게 제안할 것: `--kv-unified` 로 바꾸면 한 요청이 131072 전체를 쓸 수 있어 Claude Code 의 긴 작업에 유리하다(동시 요청은 풀을 나눠 씀).
   (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
-- 27b 서버(Qwen3.8-27B)의 **포트와 별칭** 확정. 현재 가정값 :8081 / `qwen3.8-27b` (install.sh 상단 LAB_27B_*). 뜨면 `llm-probe -P 27b`.
+- LiteLLM 의 **포트(가정 4000)와 master_key 발급 방식** 확정. 설치 후 `llm-probe http://1.233.219.134:4000 qwen3.6-35b-a3b <키>` 로 8/8 확인.
+- GB10 노드: 엔진(llama.cpp CUDA arm64 / SGLang / vLLM), 모델 id, 요청당 컨텍스트 → `proxy/litellm.config.yaml` 의 gb10 항목과 `install.sh` 의 LAB_GB10_* 채움.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.

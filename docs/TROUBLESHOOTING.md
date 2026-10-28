@@ -23,7 +23,7 @@
 | 항목 | FAIL 의미 | 조치 |
 |---|---|---|
 | 1) /v1/models 연결 실패 | 주소·포트·방화벽 | 서버에서 `curl localhost:PORT/v1/models`. 거기선 되는데 밖에서 안 되면 127.0.0.1 바인딩 → 아래 "ssh 터널" |
-| 2) /v1/messages | 서버가 Anthropic API 미지원 | vLLM/SGLang/llama.cpp/Ollama 를 최신으로 올리거나 `proxy/` 사용 |
+| 2) /v1/messages | 서버가 Anthropic API 미지원, 또는 401/400 | 401 이면 `LLM_API_KEY`(LiteLLM 키). 400 "model not found" 면 `llm-probe --models` 로 이름 확인. 그 외는 vLLM/SGLang/llama.cpp/Ollama 를 최신으로 올리거나 `proxy/` 사용 |
 | 3) 스트리밍 | SSE 미지원 또는 중간 프록시가 버퍼링 | nginx 등 앞단이 있으면 `proxy_buffering off`. 아니면 `proxy/` |
 | 4) tool_use | 모델 또는 서버가 함수 호출 미지원 | **필수.** 도구 호출 되는 모델(Qwen3-Coder, GLM-4.x/5.x, DeepSeek-V3 계열 등)과 서버 옵션(vLLM: `--enable-auto-tool-choice --tool-call-parser <모델에 맞는 파서>`) |
 | 5) tool_result 왕복 | 멀티턴 변환 버그 | 서버 업그레이드 또는 `proxy/` |
@@ -52,6 +52,13 @@ vLLM 을 올리거나 `proxy/` 로 우회.
 
 **느리다** — 연구실 서버 실측은 프롬프트 처리 약 350 tok/s, 생성 약 17 tok/s. Claude Code 의 첫 요청은 15~20k 토큰이라 첫 턴에 1분 가까이 걸리는 것이 정상이다.
 서버의 프롬프트 캐시가 이어지는 턴을 줄여 주므로, 같은 워커 세션 안에서 태스크를 이어 보내는 편이 빠르다.
+
+**LiteLLM 게이트웨이(:4000)가 응답하지 않는다** — 관리자에게 알리고, 급하면 env 를 `LLM_BASE_URL="http://1.233.219.134:8080"`,
+`LLM_API_KEY="none"` 으로 바꿔 llama.cpp 에 직접 붙는다(`install.sh --render` 후 워커 재시작). GB10 모델은 LiteLLM 없이는 못 쓴다.
+
+**401 "Authentication Error" / "Invalid proxy server token"** — LiteLLM 키가 틀렸다. 관리자가 준 `sk-…` 를 env `LLM_API_KEY` 에 넣는다.
+
+**400 "Invalid model name passed in" / "model not found"** — LiteLLM 에 그 이름이 등록돼 있지 않다. `llm-probe --models` 로 목록을 보고 `LLM_MODEL` 을 맞춘다.
 
 **서버가 127.0.0.1 에만 열려 있다 (docker `-p 127.0.0.1:8080:8080`)** — 외부에서는 연결이 거부된다. 두 가지 중 하나:
 - 서버 관리자가 docker 포트 매핑을 `-p 8080:8080` (0.0.0.0) 으로 바꾼다. 연구실 내부망 전용이면 이쪽이 간단하다.

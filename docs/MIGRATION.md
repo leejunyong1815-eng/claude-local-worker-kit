@@ -13,7 +13,7 @@
 연구실 LLM 서버(1.233.219.134, llama.cpp) 값으로 설치하려면:
 
 ```bash
-LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=qwen3.6-35b-a3b \
+LLM_BASE_URL=http://1.233.219.134:4000 LLM_API_KEY=<관리자가 준 키, 없으면 none> LLM_MODEL=qwen3.6-35b-a3b \
 WORKER_NAME=glm-worker COMPUTE_HOST=DRL COMPUTE_DESC="RTX A6000 48GB x2, 503G RAM" \
   ./install.sh --non-interactive
 ```

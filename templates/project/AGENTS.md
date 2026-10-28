@@ -4,7 +4,7 @@
 | 역할 | 세션 | 프롬프트 | 책임 |
 |---|---|---|---|
 | Orchestrator | `claude-main` (Claude) | agents/ORCHESTRATOR.md | 목표·게이트 관리, 태스크 분해·배정, 결과 검토, 문서 갱신 |
-| Implementer | `@llm-worker-27b` (Qwen3.8-27B) | agents/ROLE_IMPLEMENTER.md | 코드 구현·수정, 테스트 |
+| Implementer | `@llm-worker-gb10` (GB10 모델, 있을 때) 또는 `@llm-worker` | agents/ROLE_IMPLEMENTER.md | 코드 구현·수정, 테스트 |
 | Runner | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_RUNNER.md | 계산 노드에서 실험 실행, 로그·결과 저장 |
 | Analyst | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_ANALYST.md | 결과 집계, 그림 생성, 판정 초안 |
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — Claude 오케스트레이터 + 로컬 LLM 워커 키트 설치
 # 사용: ./install.sh [--prefix DIR] [--non-interactive] [--skip-probe]
-#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   두 번째 모델용 워커 프로필 추가 (env.NAME)
+#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   다른 모델용 워커 프로필 추가 (env.NAME, 예: gb10)
 #       ./install.sh --render                                            설정 변경 후 워커 프롬프트만 재생성 (모든 프로필)
 #   --prefix DIR        실행 파일 설치 위치 (기본 ~/.local/bin)
 #   --non-interactive   질문 없이 환경변수로 설정: LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_CONTEXT_WINDOW
@@ -15,10 +15,14 @@ INTERACTIVE=1; PROBE=1; RENDER_ONLY=0; PROFILE=""
 MIN_CLAUDE="2.1.224"   # 크로스 세션 메시징 최소 버전
 
 # 연구실 기본값 — 서버가 바뀌면 여기만 고친다.
+# 접속점은 LLM 서버의 LiteLLM 게이트웨이. 그 뒤에 같은 호스트의 llama.cpp(qwen3.6-35b-a3b)와 GB10 노드가 붙는다 (proxy/ 참고).
 LAB_HOST="http://1.233.219.134"
+LAB_DEFAULT_PORT=4000                 # LiteLLM. (LiteLLM 이 죽었을 때 임시 우회: 8080 = llama.cpp 직접)
+LAB_DEFAULT_MODEL="qwen3.6-35b-a3b"   # LiteLLM model_name = llama.cpp 별칭
 # 컨텍스트는 "요청 하나가 쓸 수 있는 크기"다. llama.cpp 는 --ctx-size 를 --parallel 슬롯 수로 나눈다 (131072/4 = 32768).
-LAB_DEFAULT_PORT=8080;  LAB_DEFAULT_MODEL="qwen3.6-35b-a3b";  LAB_DEFAULT_CTX=32768    # 기본 워커: 빠름, 도구 호출 위주
-LAB_27B_PORT=8081;      LAB_27B_MODEL="qwen3.8-27b";          LAB_27B_CTX=32768        # 프로필 27b: 느리지만 구현·디버깅 품질 높음 (서버 뜨면 확인)
+LAB_DEFAULT_CTX=32768
+# GB10 노드 모델이 LiteLLM 에 등록되면 채운다 → 프로필 gb10 의 기본값. 비어 있으면 설치기가 서버 모델 목록을 보여 주고 묻는다.
+LAB_GB10_MODEL="";  LAB_GB10_CTX=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -77,18 +81,24 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
     local file="$1" d_url="$2" d_model="$3" d_ctx="$4" d_name="$5" inherit="$6"
     local url="${LLM_BASE_URL:-}" key="${LLM_API_KEY:-}" model="${LLM_MODEL:-}" ctx="${LLM_CONTEXT_WINDOW:-}" name="${WORKER_NAME:-}"
     local chost="${COMPUTE_HOST:-}" cdir="${COMPUTE_WORK_DIR:-}" cdesc="${COMPUTE_DESC:-}"
-    if [ -n "$inherit" ] && [ -f "$inherit" ]; then   # 프로필은 기본 env 의 원격 노드 설정을 물려받는다
+    local d_key="none" d_key_label="none"
+    if [ -n "$inherit" ] && [ -f "$inherit" ]; then   # 프로필은 기본 env 의 서버 주소·키·원격 노드 설정을 물려받는다 (모델만 다름)
         # shellcheck disable=SC1090
-        eval "$(grep -E '^export COMPUTE_(HOST|WORK_DIR|DESC)=' "$inherit" | sed 's/^export /ih_/')"
+        eval "$(grep -E '^export (COMPUTE_(HOST|WORK_DIR|DESC)|LLM_BASE_URL|LLM_API_KEY)=' "$inherit" | sed 's/^export /ih_/')"
         chost="${chost:-${ih_COMPUTE_HOST:-}}"; cdir="${cdir:-${ih_COMPUTE_WORK_DIR:-}}"; cdesc="${cdesc:-${ih_COMPUTE_DESC:-}}"
+        d_url="${ih_LLM_BASE_URL:-$d_url}"; d_key="${ih_LLM_API_KEY:-none}"
+        [ "$d_key" = "none" ] || d_key_label="기본 env 와 같은 키"
     fi
     if [ $INTERACTIVE -eq 1 ]; then
         echo "    (Enter 는 괄호 안 기본값)"
         read -r -p "    LLM 서버 주소, /v1 없이 [$d_url]: " url;  url="${url:-$d_url}"
-        read -r -p "    API 토큰 (인증 없으면 아무 문자열) [none]: " key; key="${key:-none}"
+        read -r -p "    API 토큰 (LiteLLM 키 sk-… / 인증 없으면 아무 문자열) [$d_key_label]: " key; key="${key:-$d_key}"
         echo "    서버 모델 목록:"
         "$PREFIX/llm-probe" --models "$url" "?" "$key" 2>/dev/null | grep -E '^\s+- ' || echo "      (목록을 못 읽음 — 서버가 아직 안 떠 있을 수 있다)"
-        read -r -p "    모델 id [$d_model]: " model; model="${model:-$d_model}"
+        while :; do
+            read -r -p "    모델 id${d_model:+ [$d_model]}: " model; model="${model:-$d_model}"
+            [ -n "$model" ] && break; echo "    모델 id 는 비울 수 없습니다. 위 목록에서 고르세요."
+        done
         read -r -p "    모델 컨텍스트 창 토큰 수 [$d_ctx]: " ctx; ctx="${ctx:-$d_ctx}"
         read -r -p "    워커 세션 이름 [$d_name]: " name; name="${name:-$d_name}"
         if [ -z "$inherit" ]; then
@@ -99,7 +109,8 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
             fi
         fi
     else
-        url="${url:-$d_url}"; key="${key:-none}"; model="${model:-$d_model}"; ctx="${ctx:-$d_ctx}"; name="${name:-$d_name}"
+        url="${url:-$d_url}"; key="${key:-$d_key}"; model="${model:-$d_model}"; ctx="${ctx:-$d_ctx}"; name="${name:-$d_name}"
+        [ -n "$model" ] || die "LLM_MODEL 이 필요합니다 (이 프로필의 기본 모델이 아직 정해지지 않음). 예: LLM_MODEL=gb10 ./install.sh --profile gb10 --non-interactive"
     fi
     url="${url%/}"; url="${url%/v1}"
     cat > "$file" <<ENV
@@ -152,8 +163,8 @@ if [ -n "$PROFILE" ]; then
     ENV_FILE="$CONF_DIR/env.$PROFILE"
     say "워커 프로필 '$PROFILE' → $ENV_FILE"
     [ -f "$CONF_DIR/env" ] || warn "기본 설정($CONF_DIR/env)이 없습니다. 먼저 ./install.sh 를 돌리는 것이 보통입니다."
-    if [ "$PROFILE" = "27b" ]; then D_URL="$LAB_HOST:$LAB_27B_PORT"; D_MODEL="$LAB_27B_MODEL"; D_CTX="$LAB_27B_CTX"
-    else D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL="$LAB_DEFAULT_MODEL"; D_CTX="$LAB_DEFAULT_CTX"; fi
+    D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL=""; D_CTX="$LAB_DEFAULT_CTX"   # 같은 LiteLLM, 모델은 다른 것
+    if [ "$PROFILE" = "gb10" ] && [ -n "$LAB_GB10_MODEL" ]; then D_MODEL="$LAB_GB10_MODEL"; D_CTX="${LAB_GB10_CTX:-$LAB_DEFAULT_CTX}"; fi
     D_NAME="llm-worker-$PROFILE"; INHERIT="$CONF_DIR/env"
 else
     ENV_FILE="$CONF_DIR/env"
@@ -184,19 +195,19 @@ if [ $PROBE -eq 1 ]; then
     fi
 fi
 
-# ── 6. 두 번째 모델 안내 (기본 설치 때만) ─────────────────────────────────
-if [ -z "$PROFILE" ] && [ ! -f "$CONF_DIR/env.27b" ]; then
+# ── 6. 다른 모델(GB10) 안내 (기본 설치 때만) ──────────────────────────────
+if [ -z "$PROFILE" ] && [ -n "$LAB_GB10_MODEL" ] && [ ! -f "$CONF_DIR/env.gb10" ]; then
     if [ $INTERACTIVE -eq 1 ]; then
-        read -r -p "    두 번째 모델(Qwen3.8-27B, 구현·디버깅용) 워커 프로필 '27b' 도 만들까요? [Y/n] " a
+        read -r -p "    GB10 노드 모델($LAB_GB10_MODEL) 워커 프로필 'gb10' 도 만들까요? [Y/n] " a
         if [[ ! "$a" =~ ^[Nn]$ ]]; then
             unset LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_CONTEXT_WINDOW WORKER_NAME
-            say "워커 프로필 '27b' → $CONF_DIR/env.27b"
-            write_env "$CONF_DIR/env.27b" "$LAB_HOST:$LAB_27B_PORT" "$LAB_27B_MODEL" "$LAB_27B_CTX" "llm-worker-27b" "$CONF_DIR/env"
-            render_prompt "$CONF_DIR/env.27b" "$CONF_DIR/worker.27b.md"
-            [ $PROBE -eq 1 ] && { CLAUDE_WORKER_CONF_DIR="$CONF_DIR" "$PREFIX/llm-probe" -P 27b || warn "27b 서버 점검 실패 (아직 안 떠 있으면 정상)"; }
+            say "워커 프로필 'gb10' → $CONF_DIR/env.gb10"
+            write_env "$CONF_DIR/env.gb10" "$LAB_HOST:$LAB_DEFAULT_PORT" "$LAB_GB10_MODEL" "${LAB_GB10_CTX:-$LAB_DEFAULT_CTX}" "llm-worker-gb10" "$CONF_DIR/env"
+            render_prompt "$CONF_DIR/env.gb10" "$CONF_DIR/worker.gb10.md"
+            [ $PROBE -eq 1 ] && { CLAUDE_WORKER_CONF_DIR="$CONF_DIR" "$PREFIX/llm-probe" -P gb10 || warn "gb10 모델 점검 실패 (아직 등록 전이면 정상)"; }
         fi
     else
-        echo "    (두 번째 모델 프로필은 ./install.sh --profile 27b --non-interactive 로 추가)"
+        echo "    (GB10 프로필은 ./install.sh --profile gb10 --non-interactive 로 추가)"
     fi
 fi
 
@@ -207,8 +218,8 @@ cat <<MSG
 다음 단계:
   1) 프로젝트 디렉터리로 이동
   2) claude-duo                 # tmux: 오케스트레이터(왼쪽) + 기본 워커(오른쪽)
-     claude-duo -P 27b          # 기본 워커 + 27b 워커
-     또는 터미널마다  claude-main  /  claude-worker  /  claude-worker -P 27b
+     claude-duo -P gb10         # 기본 워커 + GB10 모델 워커 (프로필을 만들었을 때)
+     또는 터미널마다  claude-main  /  claude-worker  /  claude-worker -P gb10
   3) 오케스트레이터 대화에서:  Ask @${WN} to <태스크 한 개의 완결된 지시>
-  설정 변경 후:  nano $CONF_DIR/env  (또는 env.27b)  &&  $KIT/install.sh --render
+  설정 변경 후:  nano $CONF_DIR/env  (또는 env.<프로필>)  &&  $KIT/install.sh --render
 MSG
