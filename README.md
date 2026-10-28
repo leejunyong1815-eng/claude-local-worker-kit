@@ -48,9 +48,9 @@ cd ~/claude-local-worker-kit
 | 질문 | 넣을 값 |
 |---|---|
 | LLM 서버 주소 | Enter 로 연구실 LiteLLM `http://1.233.219.134:4000`. 다른 서버면 `http://호스트:포트`, **끝에 `/v1` 을 붙이지 않는다** |
-| API 토큰 | 관리자가 준 LiteLLM 키(`sk-…`). 키를 안 걸어 둔 상태면 Enter (`none`) |
-| 모델 id | Enter 로 `qwen3.6-35b-a3b`. 설치기가 LiteLLM 의 모델 목록을 출력하니 GB10 모델 등 다른 것을 골라도 된다 |
-| 컨텍스트 창 | Enter 로 32768 (연구실 서버: `--ctx-size 131072` 를 슬롯 4개가 나눠 씀). 다른 서버면 요청 하나가 쓸 수 있는 크기 (llama.cpp `--ctx-size ÷ --parallel`, vLLM `--max-model-len`) |
+| API 토큰 | Enter (`none`). 2026-10-29 현재 연구실 LiteLLM 은 키 인증이 없다. 나중에 관리자가 키를 걸면 받은 `sk-…` |
+| 모델 id | Enter 로 `qwen3.6-35b-a3b`. 설치기가 LiteLLM 의 모델 목록을 출력한다. 목록의 `qwen3.6-35b-a3b-oai` 는 도구 호출 점검에 실패하므로 고르지 않는다 |
+| 컨텍스트 창 | Enter. 설치기가 LiteLLM 이 알려 주는 값(현재 `qwen3.6-35b-a3b` = 131072)을 기본으로 보여 준다. 서버가 안 알려 주면 131072. 요청 하나가 쓸 수 있는 크기여야 한다 |
 | 워커 이름 | Enter 로 `llm-worker` |
 | 원격 노드 ssh 별칭 | `~/.ssh/config` 의 Host 이름. 없으면 Enter |
 
@@ -60,7 +60,7 @@ FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를
 질문 없이 설치하려면 (연구실 기본값):
 
 ```bash
-LLM_API_KEY=<관리자가 준 키> ./install.sh --non-interactive
+./install.sh --non-interactive
 ```
 
 다른 서버를 쓰려면 환경변수로 값을 준다: `LLM_BASE_URL=http://host:port LLM_MODEL=<id> ./install.sh --non-interactive`.
@@ -145,16 +145,16 @@ claude-duo -P gb10                                     # 기본 워커 + GB10 �
 둘 다 `Ask @이름 to …` 로 똑같이 부른다. `templates/project/agents/ORCHESTRATOR.md` 에 이 배분 규칙이 들어 있어
 오케스트레이터가 알아서 고른다. GB10 워커가 없으면 모든 일이 기본 워커로 간다.
 
-### 속도와 컨텍스트 (연구실 서버 실측, 2026-10-28)
+### 속도와 컨텍스트 (실측)
 
-| 항목 | 값 | 체감 |
-|---|---|---|
-| 프롬프트 처리 | 약 350 tok/s | Claude Code 의 첫 요청(시스템 프롬프트+도구 정의 약 15~20k 토큰)에 **약 1분**. 이후 턴은 서버 프롬프트 캐시로 짧아진다 |
-| 토큰 생성 | 약 17 tok/s | 짧은 답은 몇 초, 긴 코드 작성은 수 분 |
-| 요청당 컨텍스트 | 32768 토큰 | 동시 슬롯 4개. 넘기면 서버가 400 을 내므로 `LLM_CONTEXT_WINDOW=32768` 이 꼭 들어가야 한다 (설치기 기본값) |
+| 경로 | 프롬프트 처리 | 토큰 생성 | 요청당 컨텍스트 | Bash 한 번짜리 워커 왕복 |
+|---|---|---|---|---|
+| LiteLLM `:4000` 의 `qwen3.6-35b-a3b` (2026-10-29) | 약 5,500 tok/s | 약 90 tok/s | 131072 | 수 초 ~ 20초 |
+| LLM 서버 llama.cpp `:8080` 직접 (AMD Vega 2장, 우회용) | 약 200~350 tok/s | 약 17 tok/s | 131072 (`--kv-unified`, 동시 요청이 나눠 씀) | 약 3분 |
 
-그래서 워커에게는 **작은 태스크를 하나씩** 보내고, 긴 작업은 워커 창에서 `/clear` 로 자주 새로 시작하는 편이 낫다.
-간단한 Bash 한 번짜리 왕복(워커 시작부터 답까지)이 3분쯤 걸리는 것이 정상이다(LiteLLM 경유도 같다). 동시에 5명 이상이 쓰면 슬롯을 기다린다.
+`LLM_CONTEXT_WINDOW` 는 **실제 백엔드의 요청당 컨텍스트**와 같아야 한다. 작으면 Claude Code 가 쓸데없이 자동 압축을 반복하고
+("Autocompact is thrashing"), 크면 서버가 400 을 낸다. 설치기가 LiteLLM 의 값을 읽어 넣어 준다.
+워커에게는 여전히 **작은 태스크를 하나씩** 보내고, 긴 작업은 워커 창에서 `/clear` 로 새로 시작하는 편이 낫다.
 
 ### 워커가 멈춰 있을 때
 
@@ -226,7 +226,7 @@ llm-probe                                         # 재점검 (프로필은 llm-
 ```
 
 LiteLLM 설정·실행 방법은 [proxy/README.md](proxy/README.md). 모델을 추가·교체할 때 구성원은 `LLM_MODEL` 만 바꾸면 된다.
-LiteLLM 이 죽었을 때는 env 를 `LLM_BASE_URL=http://1.233.219.134:8080`, `LLM_API_KEY=none` 으로 바꾸면 llama.cpp 에 직접 붙는다.
+LiteLLM 이 죽었을 때는 env 를 `LLM_BASE_URL=http://1.233.219.134:8080`, `LLM_API_KEY=none` 으로 바꾸면 LLM 서버의 llama.cpp 에 직접 붙는다(느리다).
 
 ## 8. 문제 해결·제거
 

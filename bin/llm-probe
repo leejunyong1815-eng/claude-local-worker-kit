@@ -66,8 +66,13 @@ else
 try:
     d=json.load(sys.stdin); print("\n".join(m.get("id","") for m in d.get("data",[])))
 except Exception: pass')"
+    MODELS_DISP="$(printf '%s' "$RESP" | python3 -c 'import sys,json
+try:
+    for m in json.load(sys.stdin).get("data",[]):
+        c=m.get("max_input_tokens"); print(m.get("id","") + (f"   (컨텍스트 {c:,} 토큰)" if isinstance(c,int) else ""))
+except Exception: pass')"
     if [ -n "$MODELS" ]; then
-        ok "모델 목록:"; printf '%s\n' "$MODELS" | sed 's/^/         - /'
+        ok "모델 목록:"; printf '%s\n' "$MODELS_DISP" | sed 's/^/         - /'
         if [ -n "${LLM_MODEL:-}" ] && ! printf '%s\n' "$MODELS" | grep -qx "$LLM_MODEL"; then
             warn "LLM_MODEL='$LLM_MODEL' 이 목록에 없다. 이름 확인."
         fi

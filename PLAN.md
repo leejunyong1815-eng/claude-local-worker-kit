@@ -120,6 +120,15 @@ claude-local-worker-kit/
   외부에서 바로 붙는다 (터널 불필요; 터널 안내는 TROUBLESHOOTING 에 일반 사례로 남김).
   관리자에게 제안할 것: `--kv-unified` 로 바꾸면 한 요청이 131072 전체를 쓸 수 있어 Claude Code 의 긴 작업에 유리하다(동시 요청은 풀을 나눠 씀).
   (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
-- LiteLLM 의 **포트(가정 4000)와 master_key 발급 방식** 확정. 설치 후 `llm-probe http://1.233.219.134:4000 qwen3.6-35b-a3b <키>` 로 8/8 확인.
+- (해결 2026-10-29) LiteLLM 이 LLM 서버 docker 로 가동. 포트 4000, **키 없음**(처음 master_key 가 걸려 있다가 제거됨).
+  등록 모델: `qwen3.6-35b-a3b`(패스스루) → `llm-probe` 8/8. `qwen3.6-35b-a3b-oai`(변환) → 프로브 4) tool_use FAIL
+  (사고 토큰이 max_tokens 256 을 소진) → 문서에서 "고르지 말 것". LiteLLM 이 광고하는 `max_input_tokens: 131072` 는 llama.cpp 슬롯당 32768 과 불일치 →
+  (아래 정정) 2026-10-29 재측정: 게이트웨이의 `qwen3.6-35b-a3b` 는 5.5k 토큰 1.2초, 39.8k 토큰 7.2초(≈5,500 tok/s), 생성 ≈93 tok/s, 39.8k 요청 수용 →
+  Vega llama.cpp(352 tok/s, 32k 거절)가 아닌 **다른 백엔드(GB10 으로 추정, ssh 미연결로 미확인)**. `max_input_tokens: 131072` 가 맞는 값.
+  `LLM_CONTEXT_WINDOW=32768` 로 워커를 돌리니 "Autocompact is thrashing" 발생, 131072 로 올리니 Bash 왕복 2.9초 정상.
+  → install.sh 가 `/v1/models` 의 `max_input_tokens` 를 읽어 기본값으로 쓰도록 변경. llm-probe 도 모델 옆에 컨텍스트 표시.
+- 2026-10-29 서버 패치(사용자): llama.cpp 를 `--kv-unified --flash-attn` 으로 재기동 → 슬롯당 n_ctx 131072. LiteLLM 도 재기동.
+  같은 5.5k 요청: :8080 직접 29.3초(llama.cpp prompt_tokens_total +5522), :4000 게이트웨이 1.1초(카운터 +0) → 게이트웨이의
+  `qwen3.6-35b-a3b` 는 LLM 서버 llama.cpp 가 아닌 다른 백엔드가 응답(GB10 추정). 키트 폴백 기본값 LAB_DEFAULT_CTX=131072 로 통일.
 - GB10 노드: 엔진(llama.cpp CUDA arm64 / SGLang / vLLM), 모델 id, 요청당 컨텍스트 → `proxy/litellm.config.yaml` 의 gb10 항목과 `install.sh` 의 LAB_GB10_* 채움.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.

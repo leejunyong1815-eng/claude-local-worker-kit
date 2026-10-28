@@ -43,18 +43,22 @@ vLLM 을 올리거나 `proxy/` 로 우회.
 **"doesn't recognize the model … assumes a context window of 200k"** — 경고일 뿐 동작은 한다. 그러나 실제 창이 200k 보다 작으면
 아래 400 오류로 이어지므로 env `LLM_CONTEXT_WINDOW=<토큰 수>` 를 꼭 맞춘다. 그러면 Claude Code 가 그 경계 전에 자동 압축한다.
 값은 **요청 하나가 쓸 수 있는 크기**다: llama.cpp 는 `--ctx-size ÷ --parallel` (`--kv-unified` 면 `--ctx-size` 전체), vLLM/SGLang 은 `--max-model-len`.
-서버의 `curl host:port/props` 에서 `default_generation_settings.n_ctx` 로 확인할 수 있다. 연구실 서버는 131072/4 = **32768**.
+llama.cpp 는 `curl host:port/props` 의 `default_generation_settings.n_ctx` 로 확인할 수 있다. 연구실 LLM 서버는 2026-10-29 부터 `--kv-unified` 라 **131072**.
+
+**"Autocompact is thrashing: the context refilled to the limit within 3 turns"** — `LLM_CONTEXT_WINDOW` 가 실제보다 **작다**.
+Claude Code 의 첫 요청(시스템 프롬프트+도구 정의)만으로 그 값에 닿아 압축을 반복한다. `llm-probe --models` 가 보여 주는 컨텍스트로 올린다
+(연구실 LiteLLM 의 `qwen3.6-35b-a3b` 는 131072). 바꾼 뒤 `install.sh --render`, 워커 재시작.
 
 **400 `exceed_context_size_error` ("request (N tokens) exceeds the available context size")** — 요청이 슬롯 컨텍스트를 넘었다.
 `LLM_CONTEXT_WINDOW` 가 서버 값보다 크게 적혀 있는 것이 거의 전부다. 맞춘 뒤 `install.sh --render`, 워커 재시작.
 맞게 적혀 있는데도 난다면 태스크를 더 잘게 나눠 보내고 워커 세션을 자주 새로 시작한다(`/clear`).
 서버 쪽 해결은 관리자가 `--kv-unified` 를 켜거나(슬롯이 컨텍스트 풀을 공유해 한 요청이 전체를 쓸 수 있음) `--parallel` 을 줄이는 것.
 
-**느리다** — 연구실 서버 실측은 프롬프트 처리 약 350 tok/s, 생성 약 17 tok/s. Claude Code 의 첫 요청은 15~20k 토큰이라 첫 턴에 1분 가까이 걸리는 것이 정상이다.
-서버의 프롬프트 캐시가 이어지는 턴을 줄여 주므로, 같은 워커 세션 안에서 태스크를 이어 보내는 편이 빠르다.
+**느리다** — LiteLLM(:4000) 경유는 프롬프트 처리 약 5,500 tok/s, 생성 약 90 tok/s 라 Bash 한 번짜리 왕복이 수 초~20초다. 분 단위로 걸리면
+env 가 `:8080`(LLM 서버 llama.cpp 직접: 약 200~350 tok/s, 생성 17 tok/s) 을 보고 있거나 게이트웨이 백엔드가 바뀐 것이다. `llm-probe` 로 주소를 확인한다.
 
 **LiteLLM 게이트웨이(:4000)가 응답하지 않는다** — 관리자에게 알리고, 급하면 env 를 `LLM_BASE_URL="http://1.233.219.134:8080"`,
-`LLM_API_KEY="none"` 으로 바꿔 llama.cpp 에 직접 붙는다(`install.sh --render` 후 워커 재시작). GB10 모델은 LiteLLM 없이는 못 쓴다.
+`LLM_API_KEY="none"` 으로 바꿔 LLM 서버의 llama.cpp 에 직접 붙는다(`install.sh --render` 후 워커 재시작). 느리다(아래 "느리다" 항목의 수치). 다른 백엔드의 모델은 LiteLLM 없이는 못 쓴다.
 
 **401 "Authentication Error" / "Invalid proxy server token"** — LiteLLM 키가 틀렸다. 관리자가 준 `sk-…` 를 env `LLM_API_KEY` 에 넣는다.
 

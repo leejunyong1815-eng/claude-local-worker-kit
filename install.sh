@@ -19,8 +19,9 @@ MIN_CLAUDE="2.1.224"   # 크로스 세션 메시징 최소 버전
 LAB_HOST="http://1.233.219.134"
 LAB_DEFAULT_PORT=4000                 # LiteLLM. (LiteLLM 이 죽었을 때 임시 우회: 8080 = llama.cpp 직접)
 LAB_DEFAULT_MODEL="qwen3.6-35b-a3b"   # LiteLLM model_name = llama.cpp 별칭
-# 컨텍스트는 "요청 하나가 쓸 수 있는 크기"다. llama.cpp 는 --ctx-size 를 --parallel 슬롯 수로 나눈다 (131072/4 = 32768).
-LAB_DEFAULT_CTX=32768
+# 컨텍스트는 "요청 하나가 쓸 수 있는 크기"다. 설치기는 먼저 서버 /v1/models 의 max_input_tokens(LiteLLM 이 알려 줌)를 쓰고,
+# 없을 때만 아래 값을 쓴다. 아래 값 = LLM 서버 llama.cpp 직접 접속 때의 크기 (--ctx-size 131072 --kv-unified, 2026-10-29 패치 후).
+LAB_DEFAULT_CTX=131072
 # GB10 노드 모델이 LiteLLM 에 등록되면 채운다 → 프로필 gb10 의 기본값. 비어 있으면 설치기가 서버 모델 목록을 보여 주고 묻는다.
 LAB_GB10_MODEL="";  LAB_GB10_CTX=""
 
@@ -77,6 +78,17 @@ render_all() {
     done
 }
 
+detect_ctx() { # detect_ctx <url> <key> <model> → 서버가 /v1/models 에 적어 둔 max_input_tokens (없거나 연결 실패면 빈 출력, 항상 성공)
+    { curl -s -m 8 -H "Authorization: Bearer $2" -H "x-api-key: $2" "$1/v1/models" 2>/dev/null || true; } | python3 -c '
+import sys, json
+try:
+    for m in json.load(sys.stdin).get("data", []):
+        if m.get("id") == sys.argv[1] and str(m.get("max_input_tokens", "")).isdigit():
+            print(m["max_input_tokens"]); break
+except Exception:
+    pass' "$3" 2>/dev/null || true
+}
+
 write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <기본워커이름> <COMPUTE 상속 env|빈값>
     local file="$1" d_url="$2" d_model="$3" d_ctx="$4" d_name="$5" inherit="$6"
     local url="${LLM_BASE_URL:-}" key="${LLM_API_KEY:-}" model="${LLM_MODEL:-}" ctx="${LLM_CONTEXT_WINDOW:-}" name="${WORKER_NAME:-}"
@@ -99,6 +111,8 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
             read -r -p "    모델 id${d_model:+ [$d_model]}: " model; model="${model:-$d_model}"
             [ -n "$model" ] && break; echo "    모델 id 는 비울 수 없습니다. 위 목록에서 고르세요."
         done
+        det="$(detect_ctx "$url" "$key" "$model")"
+        [ -n "$det" ] && { d_ctx="$det"; echo "    (서버가 알려 준 이 모델의 컨텍스트: $det 토큰)"; }
         read -r -p "    모델 컨텍스트 창 토큰 수 [$d_ctx]: " ctx; ctx="${ctx:-$d_ctx}"
         read -r -p "    워커 세션 이름 [$d_name]: " name; name="${name:-$d_name}"
         if [ -z "$inherit" ]; then
@@ -109,7 +123,8 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
             fi
         fi
     else
-        url="${url:-$d_url}"; key="${key:-$d_key}"; model="${model:-$d_model}"; ctx="${ctx:-$d_ctx}"; name="${name:-$d_name}"
+        url="${url:-$d_url}"; key="${key:-$d_key}"; model="${model:-$d_model}"; name="${name:-$d_name}"
+        [ -n "$ctx" ] || ctx="$(detect_ctx "${url%/v1}" "$key" "$model")"; ctx="${ctx:-$d_ctx}"
         [ -n "$model" ] || die "LLM_MODEL 이 필요합니다 (이 프로필의 기본 모델이 아직 정해지지 않음). 예: LLM_MODEL=gb10 ./install.sh --profile gb10 --non-interactive"
     fi
     url="${url%/}"; url="${url%/v1}"
