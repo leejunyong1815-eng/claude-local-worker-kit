@@ -31,7 +31,7 @@ Claude Code 세션 두 개를 짝지어 쓰는 구성이다.
 |---|---|
 | Claude Code | ≥ 2.1.224 (`claude --version`). 설치: `curl -fsSL https://claude.ai/install.sh \| bash` |
 | Claude 계정 | 오케스트레이터용. 터미널에서 `claude` 를 한 번 실행해 로그인해 둔다 |
-| 로컬 LLM 서버 | Anthropic Messages API(`/v1/messages`) 제공. vLLM·SGLang·llama.cpp·Ollama(≥0.14)·LiteLLM 모두 가능. 주소·모델명·토큰은 서버 관리자에게 받는다 |
+| 로컬 LLM 서버 | 연구실 서버 `1.233.219.134` (llama.cpp `llama-server`, docker). 포트·모델명은 서버 관리자 공지를 따른다. 다른 서버도 Anthropic Messages API(`/v1/messages`)만 제공하면 된다(vLLM·SGLang·llama.cpp·Ollama ≥0.14·LiteLLM) |
 | 기타 | python3, curl 필수. tmux(동시 실행), rsync·ssh(원격 노드)는 선택 |
 | OS | Linux, WSL2, macOS. 두 세션은 반드시 **같은 머신, 같은 사용자 계정**에서 띄운다 |
 
@@ -47,9 +47,9 @@ cd ~/claude-local-worker-kit
 
 | 질문 | 넣을 값 |
 |---|---|
-| LLM 서버 주소 | `http://호스트:포트`. **끝에 `/v1` 을 붙이지 않는다** |
-| API 토큰 | 서버가 준 값. 인증이 없는 서버면 아무 문자열(`none`) |
-| 모델 id | 서버가 보여 주는 목록에서 고른다 (설치기가 목록을 출력한다) |
+| LLM 서버 주소 | 연구실 서버는 `http://1.233.219.134:<포트>` (기본값 8080). **끝에 `/v1` 을 붙이지 않는다** |
+| API 토큰 | 서버를 `--api-key` 없이 띄웠으면 Enter (`none`). 인증하는 서버면 받은 토큰 |
+| 모델 id | 설치기가 서버의 모델 목록을 출력한다. 그중 하나를 적는다 |
 | 컨텍스트 창 | 서버의 `--max-model-len`. 모르면 Enter |
 | 워커 이름 | Enter 로 `llm-worker` |
 | 원격 노드 ssh 별칭 | `~/.ssh/config` 의 Host 이름. 없으면 Enter |
@@ -60,7 +60,7 @@ FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를
 질문 없이 설치하려면:
 
 ```bash
-LLM_BASE_URL=http://llm-host:8000 LLM_API_KEY=none LLM_MODEL=Qwen3-Coder ./install.sh --non-interactive
+LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=<모델 id> ./install.sh --non-interactive
 ```
 
 설치되는 것:
@@ -204,6 +204,6 @@ templates/project/             프로젝트용 AGENTS.md, 역할 파일, 보고 
 tests/selftest.sh              오프라인 자체 검사
 docs/FIRST_RUN.md              첫 실행 시운전
 docs/TROUBLESHOOTING.md        증상별 해결
-docs/MIGRATION.md              기존 claude-glm / drl-* 구성에서 옮기기
+docs/MIGRATION.md              기존 개인 구성(claude-glm / drl-*)에서 옮기기
 PLAN.md                        배포 계획과 결정 사항
 ```

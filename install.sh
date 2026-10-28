@@ -95,14 +95,15 @@ fi
 if [ $WRITE_ENV -eq 1 ]; then
     if [ $INTERACTIVE -eq 1 ]; then
         echo "    (값을 비우면 괄호 안 기본값)"
-        read -r -p "    LLM 서버 주소, /v1 없이 (http://host:8000): " LLM_BASE_URL
+        read -r -p "    LLM 서버 주소, /v1 없이 [http://1.233.219.134:8080]: " LLM_BASE_URL
+        LLM_BASE_URL="${LLM_BASE_URL:-http://1.233.219.134:8080}"
         read -r -p "    API 토큰 (인증 없으면 아무 문자열) [none]: " LLM_API_KEY
         LLM_API_KEY="${LLM_API_KEY:-none}"
         if [ -n "${LLM_BASE_URL:-}" ]; then
             echo "    서버 모델 목록:"
             "$PREFIX/llm-probe" --models "$LLM_BASE_URL" "?" "$LLM_API_KEY" 2>/dev/null | grep -E '^\s+- ' || echo "      (목록을 못 읽음)"
         fi
-        read -r -p "    모델 id: " LLM_MODEL
+        read -r -p "    모델 id (위 목록에서): " LLM_MODEL
         read -r -p "    모델 컨텍스트 창 토큰 수 (서버 --max-model-len, 모르면 비움): " LLM_CONTEXT_WINDOW
         read -r -p "    워커 세션 이름 [llm-worker]: " WORKER_NAME
         read -r -p "    원격 계산 노드 ssh 별칭 (없으면 비움): " COMPUTE_HOST

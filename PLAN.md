@@ -8,7 +8,7 @@
 | 구성요소 | 역할 | 문제점 |
 |---|---|---|
 | `claude-main` | 진짜 Claude(Fable)로 오케스트레이터 세션 시작, `--remote-control` | 그대로 써도 됨 |
-| `claude-glm` | 두 번째 Claude Code 프로세스를 GLM 서버(LiteLLM, `133.186.146.224:8081`)에 연결, `--name glm-worker`, `crossSessionInbound: accept` | URL·모델명·토큰 경로가 하드코딩 |
+| `claude-glm` | 두 번째 Claude Code 프로세스를 기존 외부 LLM 서버(LiteLLM 프록시)에 연결, `--name glm-worker`, `crossSessionInbound: accept` | URL·모델명·토큰 경로가 하드코딩 |
 | `~/.claude/prompts/glm-worker.md` | 워커 시스템 프롬프트 | DRL 노드(A6000×2, FPGA, 계정 jyl)가 하드코딩 |
 | `drl-sync/run/submit/fetch/info` | 원격 GPU 노드에 rsync + ssh 실행 | 호스트 `DRL`, 경로 `/home/jyl/claude-work` 하드코딩 |
 | 프로젝트 `AGENTS.md`, `agents/SUBAGENT_*_GLM.md`, `HANDOFF_TEMPLATE.md` | 역할·보고 양식 | qcfd 프로젝트 전용 내용 포함 |
@@ -61,14 +61,14 @@ claude-local-worker-kit/
 - [x] `install.sh`, `uninstall.sh`, `tests/selftest.sh`
 - [x] `README.md`, `docs/TROUBLESHOOTING.md`
 - [x] 자기 환경에서 설치 테스트: 임시 prefix 에 설치, `-p` 응답·Bash 도구 호출·`--bg` 워커에 크로스 세션 메시지 전달까지 GLM 서버로 확인 (2026-10-28)
-- [ ] 새 서버 값으로 `llm-probe` → 워커 종단간 재검증
+- [ ] 연구실 LLM 서버(1.233.219.134, llama.cpp docker) 가 뜨면 `llm-probe` → 워커 종단간 재검증
 - [x] git init (초기 커밋)
 - [ ] 태그, 연구실 공유 경로(`/mnt/148TB/LJY/...`) 또는 git 저장소로 배포
 
-## 4b. 검증 결과 (2026-10-28, GLM 서버 기준)
+## 4b. 검증 결과 (2026-10-28, 기존 외부 서버 기준)
 
 - `tests/selftest.sh` 31/31 통과.
-- `llm-probe`: 스트리밍·tool_use·tool_result 왕복·thinking·count_tokens OK. 비스트리밍·cache_control 은 GLM 서버의
+- `llm-probe`: 스트리밍·tool_use·tool_result 왕복·thinking·count_tokens OK. 비스트리밍·cache_control 은 기존 서버의
   상위 백엔드 요청 한도("Request limit exceeded")로 간헐 실패 → 프로브에 재시도 추가. 기능 미지원 아님.
 - `claude-worker -p` : 일반 응답 OK, `--allowedTools Bash` 로 도구 호출 OK.
 - `claude-worker --bg` 로 띄운 워커가 `ListAgents` 에 보이고, `SendMessage` 로 보낸 태스크를 로컬 모델이 Bash 로 수행해 정확한 결과를 회신 (왕복 확인).
@@ -77,6 +77,6 @@ claude-local-worker-kit/
 
 ## 5. 미결 사항 (사용자 확인 필요)
 
-- 새 LLM 서버의 **주소, 포트, 모델명, 인증 방식**. 패키지는 값을 묻도록 만들었다.
-- 서버 종류(vLLM/SGLang/Ollama/LiteLLM). `llm-probe` 결과로 프록시 필요 여부가 정해진다.
+- 새 LLM 서버는 1.233.219.134 에 llama.cpp(llama-server) docker 로 준비 중. **포트와 모델명**은 서버가 뜨면 확정.
+  (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.
