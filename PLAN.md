@@ -71,7 +71,7 @@ claude-local-worker-kit/
 - `llm-probe`: 스트리밍·tool_use·tool_result 왕복·thinking·count_tokens OK. 비스트리밍·cache_control 은 GLM 서버의
   상위 백엔드 요청 한도("Request limit exceeded")로 간헐 실패 → 프로브에 재시도 추가. 기능 미지원 아님.
 - `claude-worker -p` : 일반 응답 OK, `--allowedTools Bash` 로 도구 호출 OK.
-- `claude-worker --bg` 로 띄운 워커가 `ListAgents` 에 보이고 `SendMessage` 로 태스크 전달됨.
+- `claude-worker --bg` 로 띄운 워커가 `ListAgents` 에 보이고, `SendMessage` 로 보낸 태스크를 로컬 모델이 Bash 로 수행해 정확한 결과를 회신 (왕복 확인).
 - `remote-info` 가 DRL 노드 현황을 가져옴.
 - 발견: Claude Code 가 모르는 모델은 컨텍스트 200k 가정 → `LLM_CONTEXT_WINDOW` 키 추가 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`).
 
