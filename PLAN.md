@@ -61,7 +61,9 @@ claude-local-worker-kit/
 - [x] `install.sh`, `uninstall.sh`, `tests/selftest.sh`
 - [x] `README.md`, `docs/TROUBLESHOOTING.md`
 - [x] 자기 환경에서 설치 테스트: 임시 prefix 에 설치, `-p` 응답·Bash 도구 호출·`--bg` 워커에 크로스 세션 메시지 전달까지 GLM 서버로 확인 (2026-10-28)
-- [ ] 연구실 LLM 서버(1.233.219.134, llama.cpp docker) 가 뜨면 `llm-probe` → 워커 종단간 재검증
+- [x] 연구실 LLM 서버(1.233.219.134:8080, llama.cpp docker, `qwen3.6-35b-a3b`) 확인 → 기본값·프롬프트 반영 (2026-10-28)
+- [x] ssh 터널(127.0.0.1:18080 → LLM:8080)로 `llm-probe` 8/8 OK, `claude-worker -p` 일반 응답·Bash 도구 호출 OK (2026-10-28)
+- [ ] 서버 포트가 0.0.0.0 으로 열리면 터널 없이 재확인
 - [x] git init (초기 커밋)
 - [ ] 태그, 연구실 공유 경로(`/mnt/148TB/LJY/...`) 또는 git 저장소로 배포
 
@@ -75,8 +77,18 @@ claude-local-worker-kit/
 - `remote-info` 가 DRL 노드 현황을 가져옴.
 - 발견: Claude Code 가 모르는 모델은 컨텍스트 200k 가정 → `LLM_CONTEXT_WINDOW` 키 추가 (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`).
 
+## 4c. 검증 결과 (2026-10-28, 연구실 llama.cpp 서버 `qwen3.6-35b-a3b`)
+
+- `llm-probe`: 모델 목록·비스트리밍·SSE·tool_use·tool_result 왕복·cache_control·thinking·count_tokens 전부 OK.
+  (비스트리밍 응답 텍스트가 비어 있던 것은 사고 토큰이 max_tokens 32 를 소진한 것. 서버 문제 아님.)
+- `claude-worker -p`: 일반 응답 OK, `--allowedTools Bash` 로 `wc -c` 실행 결과 정확.
+- `LLM_CONTEXT_WINDOW=131072` 설정으로 "context assumed to be 200k" 경고 사라짐.
+- 서버 `chat_template_caps`: tools, parallel tool calls, system role, preserve_reasoning 지원. reasoning_effort 미지원.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
-- 새 LLM 서버는 1.233.219.134 에 llama.cpp(llama-server) docker 로 준비 중. **포트와 모델명**은 서버가 뜨면 확정.
+- 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
+  `--ctx-size 131072 --parallel 4`, Vulkan0+Vulkan1 layer split. 2026-10-28 현재 docker 가 **127.0.0.1:8080 에만** 매핑되어
+  외부에서 못 붙는다 → 관리자가 0.0.0.0 으로 바꾸거나 각자 ssh 터널(docs/TROUBLESHOOTING.md).
   (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.

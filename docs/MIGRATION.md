@@ -10,10 +10,10 @@
 | `Ask @glm-worker to …` | `Ask @llm-worker to …` | `WORKER_NAME` 으로 바꿀 수 있다. 기존 이름을 유지하려면 `WORKER_NAME=glm-worker` |
 | `agents/SUBAGENT_*_GLM.md` | `agents/ROLE_*.md` | 프로젝트 파일. 내용은 그대로 두고 참조 경로만 바꾸면 된다 |
 
-연구실 LLM 서버(1.233.219.134, llama.cpp) 값으로 설치하려면 (포트·모델명은 서버가 뜬 뒤 확정):
+연구실 LLM 서버(1.233.219.134, llama.cpp) 값으로 설치하려면:
 
 ```bash
-LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=<모델 id> \
+LLM_BASE_URL=http://1.233.219.134:8080 LLM_API_KEY=none LLM_MODEL=qwen3.6-35b-a3b \
 WORKER_NAME=glm-worker COMPUTE_HOST=DRL COMPUTE_DESC="RTX A6000 48GB x2, 503G RAM" \
   ./install.sh --non-interactive
 ```

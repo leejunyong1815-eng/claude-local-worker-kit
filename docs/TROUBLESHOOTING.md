@@ -22,7 +22,7 @@
 
 | 항목 | FAIL 의미 | 조치 |
 |---|---|---|
-| 1) /v1/models 연결 실패 | 주소·포트·방화벽 | 서버에서 `curl localhost:PORT/v1/models`. 127.0.0.1 에만 바인딩됐으면 `ssh -L 8000:localhost:8000 host` 터널 후 `LLM_BASE_URL=http://localhost:8000` |
+| 1) /v1/models 연결 실패 | 주소·포트·방화벽 | 서버에서 `curl localhost:PORT/v1/models`. 127.0.0.1 에만 바인딩됐으면 아래 "ssh 터널" |
 | 2) /v1/messages | 서버가 Anthropic API 미지원 | vLLM/SGLang/llama.cpp/Ollama 를 최신으로 올리거나 `proxy/` 사용 |
 | 3) 스트리밍 | SSE 미지원 또는 중간 프록시가 버퍼링 | nginx 등 앞단이 있으면 `proxy_buffering off`. 아니면 `proxy/` |
 | 4) tool_use | 모델 또는 서버가 함수 호출 미지원 | **필수.** 도구 호출 되는 모델(Qwen3-Coder, GLM-4.x/5.x, DeepSeek-V3 계열 등)과 서버 옵션(vLLM: `--enable-auto-tool-choice --tool-call-parser <모델에 맞는 파서>`) |
@@ -45,6 +45,14 @@ vLLM 을 올리거나 `proxy/` 로 우회.
 
 **컨텍스트 길이 초과** — 로컬 모델의 컨텍스트가 짧으면 긴 작업에서 실패한다. 태스크를 더 잘게 나눠 보내고,
 워커 세션을 자주 새로 시작한다(`/clear`). 서버의 `--max-model-len` 도 확인.
+
+**서버가 127.0.0.1 에만 열려 있다 (docker `-p 127.0.0.1:8080:8080`)** — 외부에서는 연결이 거부된다. 두 가지 중 하나:
+- 서버 관리자가 docker 포트 매핑을 `-p 8080:8080` (0.0.0.0) 으로 바꾼다. 연구실 내부망 전용이면 이쪽이 간단하다.
+- 각자 ssh 터널을 쓴다. `~/.ssh/config` 에 그 서버 별칭(예: `LLM`)이 있다면:
+  ```bash
+  ssh -f -N -L 18080:127.0.0.1:8080 LLM          # 백그라운드 터널
+  ```
+  그리고 env 에 `LLM_BASE_URL="http://127.0.0.1:18080"`. 터널이 끊기면 워커가 연결 오류를 내므로 다시 띄운다.
 
 ## 크로스 세션 메시징
 

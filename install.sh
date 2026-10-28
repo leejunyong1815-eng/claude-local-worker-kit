@@ -38,7 +38,10 @@ import os, sys
 from string import Template
 tdir, out = sys.argv[1], sys.argv[2]
 env = {k: os.environ.get(k, "") for k in
-       ("WORKER_NAME", "COMPUTE_HOST", "COMPUTE_WORK_DIR", "COMPUTE_DESC")}
+       ("WORKER_NAME", "COMPUTE_HOST", "COMPUTE_WORK_DIR", "COMPUTE_DESC", "LLM_MODEL", "LLM_CONTEXT_WINDOW")}
+env["LLM_MODEL"] = env["LLM_MODEL"] or "a local model"
+env["CONTEXT_LINE"] = (f"Your context window is about {int(env['LLM_CONTEXT_WINDOW']):,} tokens."
+                       if env["LLM_CONTEXT_WINDOW"].isdigit() else "Your context window is limited.")
 env["WORKER_NAME"] = env["WORKER_NAME"] or "llm-worker"
 env["COMPUTE_WORK_DIR"] = env["COMPUTE_WORK_DIR"] or "claude-work"
 env["COMPUTE_DESC_LINE"] = f" ({env['COMPUTE_DESC']})" if env["COMPUTE_DESC"] else ""
@@ -103,8 +106,10 @@ if [ $WRITE_ENV -eq 1 ]; then
             echo "    서버 모델 목록:"
             "$PREFIX/llm-probe" --models "$LLM_BASE_URL" "?" "$LLM_API_KEY" 2>/dev/null | grep -E '^\s+- ' || echo "      (목록을 못 읽음)"
         fi
-        read -r -p "    모델 id (위 목록에서): " LLM_MODEL
-        read -r -p "    모델 컨텍스트 창 토큰 수 (서버 --max-model-len, 모르면 비움): " LLM_CONTEXT_WINDOW
+        read -r -p "    모델 id [qwen3.6-35b-a3b]: " LLM_MODEL
+        LLM_MODEL="${LLM_MODEL:-qwen3.6-35b-a3b}"
+        read -r -p "    모델 컨텍스트 창 토큰 수 [131072]: " LLM_CONTEXT_WINDOW
+        LLM_CONTEXT_WINDOW="${LLM_CONTEXT_WINDOW:-131072}"
         read -r -p "    워커 세션 이름 [llm-worker]: " WORKER_NAME
         read -r -p "    원격 계산 노드 ssh 별칭 (없으면 비움): " COMPUTE_HOST
         if [ -n "${COMPUTE_HOST:-}" ]; then
@@ -123,7 +128,7 @@ export LLM_MODEL="$LLM_MODEL"
 export LLM_DISABLE_BETAS=1
 export LLM_DISABLE_PROMPT_CACHING=0
 export LLM_MAX_THINKING_TOKENS=""
-export LLM_CONTEXT_WINDOW="${LLM_CONTEXT_WINDOW:-}"
+export LLM_CONTEXT_WINDOW="${LLM_CONTEXT_WINDOW:-131072}"
 export LLM_CAPABILITIES="${LLM_CAPABILITIES:-}"
 export WORKER_NAME="${WORKER_NAME:-llm-worker}"
 export COMPUTE_HOST="${COMPUTE_HOST:-}"
