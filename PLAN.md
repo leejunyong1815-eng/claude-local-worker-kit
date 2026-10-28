@@ -113,6 +113,15 @@ claude-local-worker-kit/
   변환 경로는 사고를 버리고 본문만 전달(본문에 `<think>` 누출 없음). `claude-worker -p` Bash 왕복: 변환 2분 47초, 패스스루도 OK.
   → `proxy/litellm.config.yaml` 기본은 `anthropic/`. LLM 서버는 Python 3.8 이라 pip 설치 불가 → docker compose(network_mode: host).
 
+## 4g. 게이트웨이 부하 시험 (2026-10-29)
+
+- LiteLLM `/model/info`: `qwen3.6-35b-a3b` 에 배포 2개 — `127.0.0.1:18000`(docker 안 `ssh -N` 터널 → GB10 1.233.218.218) 과 `127.0.0.1:8080`(LLM 서버 Vega llama.cpp).
+  `-oai` 도 같은 두 백엔드(hosted_vllm/, openai/). `/health` 4개 모두 healthy.
+- 동시 20개(2k 프롬프트, 300 생성): 전부 성공, 지연 11.5/12.9/17.1초(min/median/max), 16개가 먼저 끝나고 4개가 뒤에 → GB10 엔진 동시 슬롯 16개로 추정.
+  동시 20개(thinking off, 120 생성): 전부 성공·정답 20/20, 지연 3.1/4.6/5.1초. 동시 40개(200 생성): 전부 성공·정답 40/40, 지연 4.0/17.8/25.4초, 합계 약 270~330 tok/s.
+- 세 번 모두 LLM 서버 llama.cpp 의 `prompt_tokens_total` 변화 0, 슬롯 점유 0 → **Vega 배포는 트래픽을 전혀 받지 않는다**(GB10 이 꽉 차도 대기열로 처리).
+  라우팅 정책(가중치 또는 latency 기반)이 원인으로 보임. 관리자에게: Vega 를 같은 이름의 배포로 두기보다 `fallbacks` 로 두거나 별도 이름으로 빼는 편이 명확.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
@@ -129,6 +138,6 @@ claude-local-worker-kit/
   → install.sh 가 `/v1/models` 의 `max_input_tokens` 를 읽어 기본값으로 쓰도록 변경. llm-probe 도 모델 옆에 컨텍스트 표시.
 - 2026-10-29 서버 패치(사용자): llama.cpp 를 `--kv-unified --flash-attn` 으로 재기동 → 슬롯당 n_ctx 131072. LiteLLM 도 재기동.
   같은 5.5k 요청: :8080 직접 29.3초(llama.cpp prompt_tokens_total +5522), :4000 게이트웨이 1.1초(카운터 +0) → 게이트웨이의
-  `qwen3.6-35b-a3b` 는 LLM 서버 llama.cpp 가 아닌 다른 백엔드가 응답(GB10 추정). 키트 폴백 기본값 LAB_DEFAULT_CTX=131072 로 통일.
+  `qwen3.6-35b-a3b` 는 LLM 서버 llama.cpp 가 아닌 다른 백엔드가 응답 → 4g 에서 GB10(ssh 터널 :18000) 으로 확인. 키트 폴백 기본값 LAB_DEFAULT_CTX=131072 로 통일.
 - GB10 노드: 엔진(llama.cpp CUDA arm64 / SGLang / vLLM), 모델 id, 요청당 컨텍스트 → `proxy/litellm.config.yaml` 의 gb10 항목과 `install.sh` 의 LAB_GB10_* 채움.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.
