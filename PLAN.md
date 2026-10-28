@@ -126,6 +126,13 @@ claude-local-worker-kit/
   실패·쿨다운 때만 다음 order 로 넘어간다. 즉 Vega 는 의도된 **대기(fallback) 노드**이고, 40 동시 요청까지는 GB10 혼자 처리한다.
   LiteLLM 의 `/health` 는 Vega 에 실제 요청을 보낸다(llama.cpp 카운터 +16) → 장애 전환 경로는 살아 있음. 실제 전환은 관리자가 GB10 터널을 잠시 내려 확인하면 된다.
 
+## 4h. 라우팅 변경 후 (2026-10-29, `order` 제거 → weight 1:1 simple-shuffle)
+
+- 같은 요청 14회 순차: GB10 6건 / Vega 8건으로 분산 확인. 응답 시간 GB10 0.8초, Vega 4초(프롬프트 캐시 적중 상태).
+- 출력 동일성(temperature 0, thinking 끔, max_tokens 200): GB10 은 6건 중 5가지 문구(내용은 같고 표현만 다름) → **temperature 0 이어도 결정적이지 않다**.
+  Vega 는 8건 모두 본문이 비어 있었다 → 그 llama.cpp 빌드는 `thinking: disabled` 를 무시하고 사고를 출력해 200 토큰을 다 쓴 것(직접 접속 때의 프로브 2) 과 같은 현상).
+  Claude Code 는 사고를 켠 채 큰 max_tokens 로 요청하므로 영향 없음. 사용자 요청으로 지속 부하·추가 조사는 여기서 중단하고 배포 상태로 커밋.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
