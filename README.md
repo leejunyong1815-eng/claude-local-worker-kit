@@ -38,7 +38,7 @@ Claude Code 세션 두 개를 짝지어 쓰는 구성이다.
 ## 2. 설치
 
 ```bash
-git clone https://github.com/jjunilee/claude-local-worker-kit.git ~/claude-local-worker-kit
+git clone https://github.com/leejunyong1815-eng/claude-local-worker-kit.git ~/claude-local-worker-kit
 cd ~/claude-local-worker-kit
 ./install.sh
 ```
