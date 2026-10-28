@@ -97,4 +97,5 @@ claude-local-worker-kit/
   `--ctx-size 131072 --parallel 4`, Vulkan0+Vulkan1 layer split. 2026-10-28 현재 docker 가 **127.0.0.1:8080 에만** 매핑되어
   외부에서 못 붙는다 → 관리자가 0.0.0.0 으로 바꾸거나 각자 ssh 터널(docs/TROUBLESHOOTING.md).
   (같은 호스트의 기존 Ollama 0.34.2 는 쓰지 않는다. 참고: 그 Ollama 는 Vulkan 백엔드 + AMD Vega 2장 분할 상태에서 30B 이상 모델 출력이 깨졌다.)
+- 27b 서버(Qwen3.8-27B)의 **포트와 별칭** 확정. 현재 가정값 :8081 / `qwen3.8-27b` (install.sh 상단 LAB_27B_*). 뜨면 `llm-probe -P 27b`.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.
