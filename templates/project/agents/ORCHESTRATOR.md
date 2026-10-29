@@ -10,7 +10,7 @@
 | 설계·분해 | 오케스트레이터 | 어떤 파일에 어떤 함수/클래스가 생기는지, 모듈 경계, 데이터 흐름 |
 | 인터페이스·테스트 | 오케스트레이터 | 함수 시그니처·타입·docstring 이 든 **스켈레톤**과 **테스트 파일**을 직접 쓴다 |
 | 채우기·실행·반복 | 워커 (IMPLEMENTER) | 스켈레톤 본문을 채워 테스트를 통과시킨다. 편집마다 훅이 문법·lint 를 검사해 돌려준다 |
-| 검토·결정 | 오케스트레이터 | `git diff` 를 읽고 테스트를 직접 한 번 돌린 뒤 머지/반려 |
+| 검토·결정 | 오케스트레이터 | 외부 검증 기록과 diff를 읽고 반영/반려 결정 |
 
 - 워커에게 "모듈 전체를 설계해서 써라"는 일을 보내지 않는다. 그런 일은 스켈레톤+테스트를 먼저 만든 뒤 **채우기 태스크**로 바꿔 보낸다.
 - 태스크 하나 = 파일 1~3개, 함수 몇 개, 지시+결과 20k 토큰 이내. 크면 더 쪼갠다.
@@ -23,9 +23,18 @@
 - `@llm-worker-impl` (같은 모델, 구현 전용 프롬프트, `claude-duo -P impl` 로 띄움): 스켈레톤 채우기, 테스트 통과시키기, 작은 버그 고치기. 없으면 `@llm-worker` 에 보낸다.
 - `@llm-worker-vega` (게이트웨이의 `qwen3.6-35b-a3b`, LLM 서버 자체 GPU 우선, 컨텍스트 131k, 느림 — 떠 있을 때만): 기본 워커가 바쁠 때 가벼운 수집·정리 작업.
 
-## 워커 호출 방식
+## 관리 모드 (구현 권장)
+`worker-task submit <spec.json>`으로 등록하고 반환 ID를 `worker-task run <ID>`로 실행한다.
+명세에는 목적·지시문/태스크 파일·저장소·기준 커밋·프로필·참고 파일·허용/보호 경로·검증 명령·두 단계의 제한 시간을 넣는다.
+`worker-task status/result <ID>`로 기록을 확인하고, `worker-task cancel <ID>`로 해당 실행만 취소한다.
+실행기가 별도 detached worktree와 시도별 로그를 만든다. 워커에게 다시 checkout을 시키지 않는다.
+원본 미커밋 스켈레톤·테스트는 전달되지 않는다. 의존한다면 `depends_on_uncommitted: true`로 차단하고
+사용자가 필요한 변경의 기준 커밋을 준비한 뒤 새로 등록한다. 자동 stash·commit하지 않는다.
+관리 모드는 기존 프로필로 별도 비대화 워커를 실행한다. `/peers`의 대화형 세션 수와 별개다.
+
+## 수동 워커 호출 방식 (자동 격리·상태·검증 없음)
 ```
-Ask @llm-worker-impl to: First read <REPO>/agents/ROLE_IMPLEMENTER.md and act as IMPLEMENTER. Task file: <REPO>/agents/tasks/<T>.md. Branch: task/<T>.
+Ask @llm-worker-impl to: Work only in <ASSIGNED_WORKTREE>. First read <ASSIGNED_WORKTREE>/agents/ROLE_IMPLEMENTER.md and act as IMPLEMENTER. Task file: <TASK_FILE>. Do not checkout or commit.
 <읽을 파일·채울 함수·실행 명령·예산·수용 기준·보고 양식을 전부 포함>
 ```
 - 한 번의 Ask = 태스크 1개. 워커는 이 대화의 맥락을 모른다고 가정한다. "알아서 하라"는 지시는 보내지 않는다.
@@ -34,14 +43,15 @@ Ask @llm-worker-impl to: First read <REPO>/agents/ROLE_IMPLEMENTER.md and act as
 - 워커 세션 하나는 메시지를 순서대로 처리한다. 독립 태스크를 동시에 돌리려면 워커가 여러 개 떠 있어야 하고
   (`/peers` 로 확인), 각각 다른 워커(@llm-worker-1, @llm-worker-2 …)에 보낸다. 같은 GPU 를 두 태스크가 쓰지 않게 노드를 지정한다.
 
-## 브랜치 격리
-- 구현 태스크마다 브랜치 `task/<T>` 를 쓰게 한다. 워커가 여러 개면 `git worktree add ../<repo>-<T> -b task/<T>` 로 디렉터리까지 나눈다.
-- 실패한 시도는 브랜치째 버린다 (`git branch -D task/<T>`). 작업 트리에 반쯤 고친 파일을 남기지 않는다.
+## 작업 공간 격리
+- 관리 모드는 실행기가 worktree를 준비하고 cwd를 강제한다. 수동 모드는 오케스트레이터가 먼저 별도 worktree를 준비하고 그 경로에서 워커를 시작한다. 메인과 워커는 상대의 작업 공간을 편집하지 않는다.
+- 실패·취소·중단된 시도의 worktree와 결과를 보존한다. 자동 삭제·merge·commit하지 않는다.
+- worktree는 보안 샌드박스가 아니다. 같은 사용자 권한의 절대 경로 접근과 공유 Git refs를 차단하지 않는다.
 
 ## 검토 절차 (REPORT 를 받을 때마다)
-1. **diff 를 직접 읽는다**: `git diff main..task/<T>` (또는 `git diff --stat` 뒤 파일별로). 보고서의 요약만 믿지 않는다.
-2. **테스트를 직접 한 번 돌린다**: 태스크 파일의 실행 명령을 그대로. 워커의 "통과" 보고는 증거가 아니다.
-3. 테스트 파일이 바뀌었는지 확인한다 (`git diff --stat -- tests/`). 허락 없이 바뀌었으면 반려.
+1. **diff 를 직접 읽는다**: 관리 모드의 `worker-task result <ID>`가 가리키는 diff와 변경 파일 목록(미추적 포함)을 확인한다. 수동 모드는 기준 커밋 대비 diff와 미추적 파일을 함께 확인한다.
+2. **외부 검증 기록을 확인한다**: 관리 모드의 상태·검증 종료 코드·timeout·유효한 코드 해시를 확인한다. 수동 모드는 지정 명령을 직접 실행해 실제 종료 코드를 확인한다. 워커의 "통과" 보고는 증거가 아니다.
+3. 테스트·설정·검증 파일을 보호 경로에 포함하고 변경·삭제가 없는지 확인한다. 검증 뒤 코드를 편집하면 이전 성공은 무효이며 다시 검증한다.
 4. 수용 기준 표가 숫자로 채워졌는지 확인. 비어 있으면 반려. 최소 1개 숫자를 직접 재검산한다.
 5. 반증 체크 결론을 태스크 파일과 대조한다.
 6. `results/CAMPAIGN_LOG.md` 에 날짜·태스크·결정·근거를 한 줄씩 추가한다.

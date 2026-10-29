@@ -1,0 +1,570 @@
+#!/usr/bin/env python3
+"""Opt-in task runner for the existing claude-worker CLI (stdlib only)."""
+import argparse
+import codecs
+import contextlib
+import fcntl
+import fnmatch
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import selectors
+import shlex
+import signal
+import stat
+import subprocess
+import sys
+import time
+import uuid
+
+
+ACTIVE = {"running", "verifying"}
+DEFAULT_PROTECTED = ["tests/", "config/", ".claude/", ".git"]
+
+
+def now():
+    return time.time()
+
+
+def read_json(path):
+    return json.loads(path.read_text())
+
+
+def atomic_json(path, value):
+    tmp = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    with tmp.open("x") as out:
+        json.dump(value, out, ensure_ascii=False, indent=2)
+        out.write("\n")
+        out.flush()
+        os.fsync(out.fileno())
+    os.replace(tmp, path)
+
+
+def git(repo, *args):
+    # Never inherit the caller's index/worktree overrides or execute checkout hooks.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    p = subprocess.run(["git", "-c", "core.hooksPath=/dev/null", "-C", str(repo), *args],
+                       env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if p.returncode:
+        raise ValueError("git operation failed: " + p.stderr.decode(errors="replace").strip())
+    return p.stdout
+
+
+def dirty(repo):
+    # Filename/status metadata only; do not read the caller's changed contents.
+    return bool(git(repo, "status", "--porcelain=v1", "-z", "--untracked-files=all"))
+
+
+def rules(value, name):
+    if not isinstance(value, list) or not all(isinstance(p, str) and p for p in value):
+        raise ValueError(name + " must be a list of nonempty relative paths/globs")
+    for p in value:
+        if p.startswith("/") or ".." in p.split("/") or p.startswith(".git/") or p == ".git":
+            raise ValueError("unsafe path rule: " + p)
+    return value
+
+
+def matches(path, patterns):
+    return any(path == p.rstrip("/") or path.startswith(p.rstrip("/") + "/")
+               or fnmatch.fnmatchcase(path, p) for p in patterns)
+
+
+def snapshot(root):
+    """Include tracked, untracked and ignored files; never follow symlinks."""
+    result = {}
+
+    def walk(folder, prefix=""):
+        for entry in sorted(os.scandir(folder), key=lambda e: e.name):
+            if not prefix and entry.name == ".git" and entry.is_dir(follow_symlinks=False):
+                continue
+            rel = prefix + entry.name
+            info = entry.stat(follow_symlinks=False)
+            if stat.S_ISLNK(info.st_mode):
+                result[rel] = ["link", os.readlink(entry.path)]
+            elif stat.S_ISDIR(info.st_mode):
+                walk(entry.path, rel + "/")
+            elif stat.S_ISREG(info.st_mode):
+                h = hashlib.sha256()
+                with open(entry.path, "rb") as src:
+                    for block in iter(lambda: src.read(1024 * 1024), b""):
+                        h.update(block)
+                result[rel] = ["file", stat.S_IMODE(info.st_mode), h.hexdigest()]
+            else:
+                raise ValueError("unsupported special file: " + rel)
+    walk(root)
+    return result
+
+
+def digest(value):
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
+def changes(before, after):
+    return [{"path": p, "change": "added" if p not in before else
+             "deleted" if p not in after else "modified"}
+            for p in sorted(before.keys() | after.keys()) if before.get(p) != after.get(p)]
+
+
+def identity(pid):
+    try:
+        # Linux /proc identity prevents signalling a recycled PID after recovery.
+        fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+        return {"pid": pid, "start": int(fields[19]),
+                "boot": Path("/proc/sys/kernel/random/boot_id").read_text().strip(),
+                "group": int(fields[2]), "session": int(fields[3]), "zombie": fields[0] == "Z"}
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def alive(who):
+    current = identity(who["pid"]) if who else None
+    return bool(current and not current["zombie"] and
+                all(current[k] == who[k] for k in ("start", "boot")))
+
+
+def group_members(who):
+    if not who:
+        return []
+    current = identity(who["pid"])
+    if current and any(current[k] != who[k] for k in ("start", "boot")):
+        return []
+    return [p for entry in Path("/proc").iterdir() if entry.name.isdigit()
+            if (p := identity(int(entry.name))) and not p["zombie"]
+            and p["boot"] == who["boot"] and p["start"] >= who["start"]
+            and p["group"] == who["pid"] and p["session"] == who["pid"]]
+
+
+def stop_group(who):
+    # Only this attempt's new session, never process-name-wide kill/pkill.
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        if not group_members(who):
+            return
+        try:
+            os.killpg(who["pid"], sig)
+        except ProcessLookupError:
+            return
+        deadline = time.monotonic() + 0.3
+        while time.monotonic() < deadline and group_members(who):
+            time.sleep(0.02)
+
+
+def secrets_for(profile):
+    values = [os.environ.get(k, "") for k in
+              ("LLM_API_KEY", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")]
+    conf = Path(os.environ.get("CLAUDE_WORKER_CONF_DIR", Path.home() / ".config/claude-worker"))
+    path = conf / ("env" + ("." + profile if profile else ""))
+    if path.is_file():
+        for line in path.read_text().splitlines():
+            if re.match(r"^(?:export\s+)?LLM_API_KEY=", line):
+                try:
+                    values.extend(shlex.split(line.split("=", 1)[1], comments=True))
+                except ValueError:
+                    pass
+    return [v for v in values if v and v not in {"none", "dummy", "k"}]
+
+
+def redact(text, secrets):
+    for secret in sorted(secret_forms(secrets), key=len, reverse=True):
+        text = text.replace(secret, "[REDACTED]")
+    return text
+
+
+def secret_forms(secrets):
+    return {form for s in secrets for form in (s, json.dumps(s)[1:-1], json.dumps(s, ensure_ascii=False)[1:-1])}
+
+
+class Tasks:
+    def __init__(self, root):
+        self.root = root.expanduser().resolve()
+
+    def path(self, task):
+        if not re.fullmatch(r"t-[a-f0-9]{32}", task):
+            raise ValueError("invalid task ID")
+        folder = self.root / task
+        if not (folder / "state.json").is_file():
+            raise ValueError("unknown task: " + task)
+        return folder
+
+    @contextlib.contextmanager
+    def locked(self, folder):
+        with (folder / "lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+
+    def save(self, folder, state):
+        atomic_json(folder / "state.json", state)
+        if state.get("current_attempt"):
+            atomic_json(folder / "attempts" / state["current_attempt"] / "result.json", state)
+
+    def collect(self, folder, state, secrets):
+        """Collect final artifacts, including after a dead runner's children stop."""
+        output = folder / "attempts" / state["current_attempt"]
+        wt = Path(state["worktree"])
+        state["artifacts_complete"] = False
+        try:
+            baseline = read_json(output / "baseline.json")
+            final = snapshot(wt)
+            state["changed_files"] = changes(baseline, final)
+            if state["state"] == "succeeded" and digest(final) != state["verified_digest"]:
+                state.update(state="failed", reason="changed_after_verification", verification_valid=False)
+            # .git itself is protected. Never follow a modified Git control file.
+            patch = "# Git control file changed; Git diff was not run.\n"
+            if baseline.get(".git") == final.get(".git"):
+                patch = git(wt, "diff", "--no-ext-diff", "--no-textconv", "--binary", state["base_commit"], "--").decode(errors="replace")
+                tracked = set(git(wt, "ls-files", "-z").decode(errors="replace").split("\0"))
+                for c in state["changed_files"]:
+                    if c["change"] == "added" and c["path"] not in tracked:
+                        p = subprocess.run(["git", "diff", "--no-index", "--no-ext-diff", "--no-textconv", "--binary", "--", "/dev/null", str(wt / c["path"])], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        patch += p.stdout.decode(errors="replace")
+            (output / "changes.diff").write_text(redact(patch, secrets))
+            state["artifacts_complete"] = True
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            state["artifact_error"] = redact(str(exc), secrets)
+            if state["state"] == "succeeded":
+                state.update(state="failed", reason="artifact_error", verification_valid=False)
+
+    def recover(self, folder, state):
+        if state["state"] in ACTIVE and not alive(state.get("runner")):
+            ended = now()
+            state.update(state="interrupted", reason="runner_lost", finished_at=ended,
+                         duration_seconds=ended - state["started_at"], verification_valid=False)
+            self.save(folder, state)
+        if state["state"] == "interrupted" and not state.get("artifacts_complete") and not group_members(state.get("child")):
+            self.collect(folder, state, secrets_for(state["profile"]))
+            self.save(folder, state)
+        if state["state"] == "succeeded":
+            try:
+                valid = (digest(read_json(folder / "spec.json")) == state["spec_digest"] and
+                         digest(snapshot(Path(state["worktree"]))) == state["verified_digest"])
+            except (OSError, ValueError):
+                valid = False
+            if not valid:
+                state.update(state="failed", reason="changed_after_verification", verification_valid=False)
+                self.save(folder, state)
+        return state
+
+    def submit(self, spec_path):
+        raw = read_json(spec_path)
+        if not isinstance(raw, dict):
+            raise ValueError("task spec must be a JSON object")
+        repo = Path(raw.get("repository", ".")).expanduser().resolve()
+        repo = Path(git(repo, "rev-parse", "--show-toplevel").decode().strip())
+        # Metadata/worktrees may not reside in the source tree (even ignored dirs).
+        if self.root == repo or repo in self.root.parents:
+            raise ValueError("task state directory must be outside the original checkout")
+        base = git(repo, "rev-parse", "--verify", str(raw.get("base_commit", "HEAD")) + "^{commit}").decode().strip()
+        purpose = raw.get("purpose", "")
+        instructions = raw.get("instructions", "")
+        if raw.get("task_file"):
+            instructions += "\n" + (spec_path.parent / raw["task_file"]).read_text()
+        if not isinstance(purpose, str) or not purpose.strip() or not isinstance(instructions, str) or not instructions.strip():
+            raise ValueError("purpose and instructions (or task_file) are required")
+        profile = raw.get("profile", "")
+        if not isinstance(profile, str) or (profile and not re.fullmatch(r"[A-Za-z0-9_-]+", profile)):
+            raise ValueError("invalid profile")
+        allowed = rules(raw.get("allowed_paths", []), "allowed_paths")
+        if not allowed:
+            raise ValueError("allowed_paths must not be empty")
+        protected = list(dict.fromkeys(DEFAULT_PROTECTED + rules(raw.get("protected_paths", []), "protected_paths")))
+        refs = rules(raw.get("references", []), "references")
+        verify = raw.get("verify", [])
+        if not isinstance(verify, list) or not verify or not all(isinstance(c, str) and c.strip() for c in verify):
+            raise ValueError("verify must contain explicit shell commands")
+        limits = [raw.get("timeout", 1200), raw.get("verify_timeout", 120)]
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) and 0 < x <= 86400 for x in limits):
+            raise ValueError("timeout and verify_timeout must be in (0, 86400] seconds")
+        depends = raw.get("depends_on_uncommitted", False)
+        if not isinstance(depends, bool):
+            raise ValueError("depends_on_uncommitted must be boolean")
+        spec = dict(purpose=purpose, instructions=instructions, repository=str(repo), base_commit=base,
+                    profile=profile, references=refs, allowed_paths=allowed, protected_paths=protected,
+                    verify=verify, timeout=limits[0], verify_timeout=limits[1], depends_on_uncommitted=depends)
+        serialized = json.dumps(spec)
+        if redact(serialized, secrets_for(profile)) != serialized:
+            raise ValueError("task specification contains a configured API key; remove it")
+        has_dirty = dirty(repo)
+        task = "t-" + uuid.uuid4().hex
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        folder = self.root / task
+        folder.mkdir(mode=0o700)
+        (folder / "attempts").mkdir()
+        atomic_json(folder / "spec.json", spec)
+        atomic_json(folder / "state.json", dict(task_id=task, state="queued", reason=
+                    "uncommitted_dependency" if has_dirty and depends else None,
+                    created_at=now(), attempts=[], current_attempt=None, base_commit=base,
+                    profile=profile, original_dirty_at_submit=has_dirty,
+                    uncommitted_changes_included=False, spec_digest=digest(spec)))
+        if has_dirty:
+            print("Original checkout is dirty. Only the recorded base commit is included; uncommitted changes are excluded.", file=sys.stderr)
+        return task
+
+    def get(self, task):
+        folder = self.path(task)
+        with self.locked(folder):
+            state = self.recover(folder, read_json(folder / "state.json"))
+            state["surviving_processes"] = [p["pid"] for p in group_members(state.get("child"))]
+            return state
+
+    def cancel(self, task):
+        folder = self.path(task)
+        with self.locked(folder):
+            state = self.recover(folder, read_json(folder / "state.json"))
+            if state["state"] in ACTIVE:
+                state["cancel_requested"] = True
+                self.save(folder, state)
+            elif state["state"] == "queued" or (state["state"] == "interrupted" and group_members(state.get("child"))):
+                stop_group(state.get("child"))
+                state.update(state="cancelled", reason="cancelled_by_user", finished_at=now())
+                if state.get("current_attempt"):
+                    state["duration_seconds"] = now() - state["started_at"]
+                    self.collect(folder, state, secrets_for(state["profile"]))
+                self.save(folder, state)
+            return state
+
+    def run(self, task, retry=False, profile=None):
+        folder = self.path(task)
+        with self.locked(folder):
+            old = self.recover(folder, read_json(folder / "state.json"))
+            if old["state"] in ACTIVE or group_members(old.get("child")):
+                raise ValueError("task already running or has surviving processes; inspect/cancel it first")
+            if old["state"] != "queued" and not retry:
+                raise ValueError("task already attempted; use --retry to preserve it and create a new attempt")
+            spec = read_json(folder / "spec.json")
+            if digest(spec) != old["spec_digest"]:
+                raise ValueError("registered specification changed; submit a new task")
+            if profile is not None and profile != spec["profile"]:
+                raise ValueError("profile is fixed at registration; submit a new task to change it")
+            if spec["depends_on_uncommitted"] and (old["original_dirty_at_submit"] or dirty(spec["repository"])):
+                old["reason"] = "uncommitted_dependency"
+                self.save(folder, old)
+                raise ValueError("uncommitted dependency excluded: prepare a base commit containing the intended inputs yourself, then submit a new task; no stash/commit is performed")
+            if not sys.platform.startswith("linux"):
+                raise ValueError("managed mode currently requires Linux /proc for process identity and recovery")
+            attempt = f"{len(old['attempts']) + 1:04d}"
+            output = folder / "attempts" / attempt
+            output.mkdir()
+            wt = output / "worktree"
+            state = dict(task_id=task, attempt_id=attempt, current_attempt=attempt,
+                         attempts=old["attempts"] + [attempt], state="running", reason=None,
+                         base_commit=spec["base_commit"], profile=spec["profile"], worktree=str(wt),
+                         worker_name=f"task-{task[-12:]}-{attempt}",
+                         original_dirty_at_submit=old["original_dirty_at_submit"],
+                         original_dirty_at_run=dirty(spec["repository"]), uncommitted_changes_included=False,
+                         spec_digest=old["spec_digest"], runner=identity(os.getpid()), child=None,
+                         started_at=now(), worker_exit_code=None, verification_exit_codes=[],
+                         worker_timed_out=False, verification_timed_out=False, verification_valid=False,
+                         artifacts_complete=False,
+                         changed_files=[], logs={"worker_stdout": str(output / "worker.stdout.log"),
+                         "worker_stderr": str(output / "worker.stderr.log"),
+                         "verification": str(output / "verification.log"),
+                         "verification_stderr": str(output / "verification.stderr.log")}, diff_path=str(output / "changes.diff"))
+            self.save(folder, state)
+
+        secrets = secrets_for(spec["profile"])
+        interrupted = []
+        previous = {}
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            previous[sig] = signal.signal(sig, lambda signum, frame: interrupted.append(signum))
+
+        def update(**values):
+            state.update(values)
+            with self.locked(folder):
+                requested = read_json(folder / "state.json").get("cancel_requested", False)
+                state["cancel_requested"] = requested
+                if state["state"] == "succeeded" and (requested or interrupted):
+                    state.update(state="interrupted" if interrupted else "cancelled",
+                                 reason="runner_signal" if interrupted else "cancelled_by_user",
+                                 verification_valid=False)
+                self.save(folder, state)
+
+        def cancelled():
+            return bool(interrupted or read_json(folder / "state.json").get("cancel_requested"))
+
+        def execute(command, timeout, stdout, stderr):
+            # cwd is enforced by the process launcher, independent of prompts.
+            env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            env["CLAUDE_PROJECT_DIR"] = str(wt)
+            env["CLAUDE_WORKER_PROFILE"] = spec["profile"]
+            env["CLAUDE_WORKER_NAME"] = state["worker_name"]
+            env["WORKER_TASK_MANAGED"] = "1"
+            process = subprocess.Popen(command, cwd=wt, env=env, start_new_session=True,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            who = identity(process.pid)
+            selector = selectors.DefaultSelector()
+            streams = []
+            # Nonblocking pipes avoid hanging on inherited FDs after a child exits.
+            # Retain a suffix so a key split across read() chunks is still redacted.
+            keep = max([len(s) for s in secret_forms(secrets)] + [1])
+            for pipe, path in ((process.stdout, stdout), (process.stderr, stderr)):
+                os.set_blocking(pipe.fileno(), False)
+                stream = dict(pipe=pipe, log=path.open("a"), pending="",
+                              decoder=codecs.getincrementaldecoder("utf-8")("replace"))
+                streams.append(stream)
+                selector.register(pipe, selectors.EVENT_READ, stream)
+
+            def drain(wait):
+                for key, _ in selector.select(wait):
+                    stream = key.data
+                    data = os.read(key.fd, 65536)
+                    text = stream["decoder"].decode(data, final=not data)
+                    stream["pending"] = redact(stream["pending"] + text, secrets)
+                    length = max(0, len(stream["pending"]) - keep) if data else len(stream["pending"])
+                    stream["log"].write(stream["pending"][:length])
+                    stream["log"].flush()
+                    stream["pending"] = stream["pending"][length:]
+                    if not data:
+                        selector.unregister(key.fileobj)
+
+            end = time.monotonic() + timeout
+            timed_out = False
+            try:
+                update(child=who)
+                while process.poll() is None:
+                    if cancelled() or time.monotonic() >= end:
+                        timed_out = not cancelled()
+                        stop_group(who)
+                        break
+                    drain(0.05)
+            finally:
+                # Background descendants must not keep editing after worker exit.
+                stop_group(who)
+                process.wait()
+                deadline = time.monotonic() + 0.5
+                while selector.get_map() and time.monotonic() < deadline:
+                    drain(0.02)
+                leaked_pipes = bool(selector.get_map())
+                selector.close()
+                for stream in streams:
+                    stream["log"].write(redact(stream["pending"], secrets))
+                    stream["log"].close()
+                    stream["pipe"].close()
+            update(child=None)
+            if leaked_pipes:
+                raise ValueError("descendant retained log pipes outside the managed process session")
+            return process.returncode, timed_out
+
+        def finish(status, reason):
+            if status == "succeeded" and cancelled():
+                status, reason = ("interrupted", "runner_signal") if interrupted else ("cancelled", "cancelled_by_user")
+                state["verification_valid"] = False
+            # Publish the terminal state only after collecting artifacts in finally.
+            # Until then another runner must still see this attempt as active.
+            state.update(state=status, reason=reason, finished_at=now(), duration_seconds=now() - state["started_at"])
+            return state
+
+        baseline = None
+        try:
+            git(spec["repository"], "worktree", "add", "--detach", str(wt), spec["base_commit"])
+            staged = git(wt, "ls-files", "--stage")
+            if staged.startswith(b"160000 ") or b"\n160000 " in staged:
+                raise ValueError("managed mode does not support submodules yet")
+            baseline = snapshot(wt)
+            atomic_json(output / "baseline.json", baseline)
+            missing = [p for p in spec["references"] if not any(matches(f, [p]) for f in baseline)]
+            if missing:
+                raise ValueError("reference absent from base commit (possibly uncommitted): " + ", ".join(missing))
+            prompt = (f"Managed task {task}, attempt {attempt}. Purpose: {spec['purpose']}\n"
+                      f"Your assigned worktree is {wt}, detached at {spec['base_commit']}. "
+                      "Stay in this worktree. Do not checkout, add, commit, merge or remove worktrees. "
+                      "Leave edits for external verification. Your report is not the success decision.\n"
+                      f"Read references: {json.dumps(spec['references'])}\n"
+                      f"Allowed paths: {json.dumps(spec['allowed_paths'])}\n"
+                      f"Protected paths: {json.dumps(spec['protected_paths'])}\n"
+                      f"Verification: {json.dumps(spec['verify'])}\n\n{spec['instructions']}")
+            worker = str(Path(__file__).resolve().with_name("claude-worker"))
+            command = [worker] + (["-P", spec["profile"]] if spec["profile"] else [])
+            command += ["-p", prompt, "--output-format", "json", "--max-turns", "60"]
+            rc, timed_out = execute(command, spec["timeout"], output / "worker.stdout.log", output / "worker.stderr.log")
+            update(worker_exit_code=rc, worker_timed_out=timed_out)
+            if cancelled():
+                return finish("interrupted" if interrupted else "cancelled", "runner_signal" if interrupted else "cancelled_by_user")
+            if timed_out:
+                return finish("failed", "worker_timeout")
+            if rc:
+                return finish("failed", "worker_exit_nonzero")
+            try:
+                response = read_json(output / "worker.stdout.log")
+                if not isinstance(response, dict) or not isinstance(response.get("is_error"), bool):
+                    raise ValueError("missing result envelope")
+            except (ValueError, OSError):
+                return finish("failed", "invalid_worker_result")
+            if response["is_error"] or str(response.get("subtype", "")).startswith("error"):
+                return finish("failed", "model_error")
+            update(state="verifying")
+            before = snapshot(wt)
+            changed = changes(baseline, before)
+            violations = [c["path"] for c in changed if not matches(c["path"], spec["allowed_paths"])
+                          or matches(c["path"], spec["protected_paths"])]
+            update(changed_files=changed, policy_violations=violations)
+            if violations:
+                return finish("failed", "path_policy_violation")
+            for command in spec["verify"]:
+                if cancelled():
+                    return finish("interrupted" if interrupted else "cancelled", "runner_signal" if interrupted else "cancelled_by_user")
+                rc, timed_out = execute(["bash", "-o", "pipefail", "-c", command], spec["verify_timeout"],
+                                        output / "verification.log", output / "verification.stderr.log")
+                state["verification_exit_codes"].append(rc)
+                update(verification_timed_out=timed_out)
+                if cancelled():
+                    return finish("interrupted" if interrupted else "cancelled", "runner_signal" if interrupted else "cancelled_by_user")
+                if timed_out:
+                    return finish("failed", "verification_timeout")
+                if rc:
+                    return finish("failed", "verification_exit_nonzero")
+            after = snapshot(wt)
+            if before != after:
+                return finish("failed", "changed_during_verification")
+            update(verified_digest=digest(after), verification_valid=True)
+            return finish("succeeded", None)
+        except (OSError, ValueError, subprocess.SubprocessError) as exc:
+            update(error=redact(str(exc), secrets))
+            return finish("interrupted" if interrupted else "failed", "runner_signal" if interrupted else "execution_error")
+        finally:
+            try:
+                if baseline is not None:
+                    self.collect(folder, state, secrets)
+            finally:
+                update()
+                for sig, handler in previous.items():
+                    signal.signal(sig, handler)
+
+
+def main():
+    os.umask(0o077)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-dir", type=Path, default=Path(os.environ.get("WORKER_TASK_HOME",
+                        str(Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state"))) / "claude-worker/tasks"))))
+    sub = parser.add_subparsers(dest="command", required=True)
+    submit = sub.add_parser("submit", help="register an immutable JSON task spec; print its ID")
+    submit.add_argument("spec", type=Path)
+    run = sub.add_parser("run", help="run in foreground; no automatic retries")
+    run.add_argument("task")
+    run.add_argument("--retry", action="store_true")
+    run.add_argument("-P", "--profile", help="assert the profile recorded at submission")
+    for name in ("status", "result", "cancel"):
+        sub.add_parser(name).add_argument("task")
+    args = parser.parse_args()
+    try:
+        tasks = Tasks(args.state_dir)
+        if args.command == "submit":
+            print(tasks.submit(args.spec.resolve()))
+            return 0
+        if args.command == "run":
+            result = tasks.run(args.task, args.retry, args.profile)
+        elif args.command == "cancel":
+            result = tasks.cancel(args.task)
+        else:
+            result = tasks.get(args.task)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return int(args.command == "run" and result["state"] != "succeeded")
+    except (ValueError, OSError, KeyError) as exc:
+        print("worker-task: " + str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -3,12 +3,34 @@
 set -uo pipefail
 KIT="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+# Default is fully offline and does not require an installed Claude CLI.
+# --real-cli checks the installed CLI version in install.sh, but calls no model.
+case "${1:-}" in
+    "")
+        mkdir -p "$TMP/mock"
+        printf '#!/bin/sh\n[ "$1" = --version ] && { echo "2.1.312 (mock)"; exit 0; }\nexit 99\n' > "$TMP/mock/claude"
+        chmod +x "$TMP/mock/claude"
+        export PATH="$TMP/mock:$PATH"
+        ;;
+    --real-cli) ;;
+    *) echo 'Usage: tests/selftest.sh [--real-cli]' >&2; exit 2 ;;
+esac
+# Install context discovery is mocked too; --skip-probe alone does not skip it.
+mkdir -p "$TMP/mock-curl"
+printf '#!/bin/sh\nprintf '\''{"data":[]}\\n'\''\n' > "$TMP/mock-curl/curl"
+chmod +x "$TMP/mock-curl/curl"
+export PATH="$TMP/mock-curl:$PATH"
 PASS=0; FAIL=0
 t() { if "$@" >/dev/null 2>&1; then PASS=$((PASS+1)); echo "  ok   $*"; else FAIL=$((FAIL+1)); echo "  FAIL $*"; fi; }
 tn() { if ! "$@" >/dev/null 2>&1; then PASS=$((PASS+1)); echo "  ok   (expected failure) $*"; else FAIL=$((FAIL+1)); echo "  FAIL (should fail) $*"; fi; }
 
 echo "1) 문법"
-for f in "$KIT"/bin/* "$KIT"/install.sh "$KIT"/uninstall.sh; do t bash -n "$f"; done
+for f in "$KIT"/bin/* "$KIT"/install.sh "$KIT"/uninstall.sh; do
+    [ -f "$f" ] || continue
+    if [ "$(basename "$f")" = worker-task ]; then
+        t python3 -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f"
+    else t bash -n "$f"; fi
+done
 if command -v shellcheck >/dev/null 2>&1; then
     t shellcheck -S warning "$KIT"/bin/project-init "$KIT"/templates/project/agents/hooks/post-edit-check.sh "$KIT"/bin/claude-main "$KIT"/bin/claude-worker "$KIT"/bin/claude-duo "$KIT"/bin/llm-probe "$KIT"/bin/remote-* "$KIT"/install.sh "$KIT"/uninstall.sh
 else echo "  skip shellcheck (미설치)"; fi
@@ -25,6 +47,8 @@ t env PREFIX="$TMP/bin" LLM_BASE_URL="http://127.0.0.1:9/v1/" LLM_API_KEY="k" LL
      COMPUTE_HOST="node1" COMPUTE_WORK_DIR="work" COMPUTE_DESC="GPU x2" \
      "$KIT/install.sh" --non-interactive --skip-probe --prefix "$TMP/bin"
 t test -x "$TMP/bin/claude-worker"
+t test -x "$TMP/bin/worker-task"
+t "$TMP/bin/worker-task" --help
 t test -f "$TMP/conf/env"
 t grep -q 'LLM_BASE_URL="http://127.0.0.1:9"' "$TMP/conf/env"          # 끝의 /v1/ 제거
 t grep -q 'Ask @w1 to' "$TMP/conf/worker.md"
@@ -91,7 +115,7 @@ t test "$(cat "$TMP/proj/AGENTS.md")" = "x"                              # 기�
 mkdir -p "$TMP/proj/tests"; printf 'from a import f\ndef test_f(): assert f(2) == 4\n' > "$TMP/proj/tests/test_a.py"
 printf 'TEST_CMD="auto"\n' > "$TMP/proj/agents/hooks/check.conf"                     # 기본은 테스트 끔 → 이 검사에서는 켠다
 printf 'def f(x):\n    return x*3\n' > "$TMP/proj/a.py"
-hook() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$TMP/proj/a.py" | CLAUDE_PROJECT_DIR="$TMP/proj" "$TMP/proj/agents/hooks/post-edit-check.sh"; }
+hook() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$TMP/proj/a.py" | PYTHONDONTWRITEBYTECODE=1 WORKER_TASK_MANAGED=0 CLAUDE_PROJECT_DIR="$TMP/proj" "$TMP/proj/agents/hooks/post-edit-check.sh"; }
 tn hook                                                                  # 테스트 실패 → 종료 2
 t grep -q 'assert 6 == 4' "$TMP/proj/agents/hooks/last-check.log"
 printf 'def f(x):\n    return x*2\n' > "$TMP/proj/a.py"
@@ -120,5 +144,6 @@ tn test -e "$TMP/bin/claude-worker"
 tn test -e "$TMP/conf"
 tn test -e "$TMP/conf/env.gb10"
 tn test -e "$TMP/bin/project-init"
+tn test -e "$TMP/bin/worker-task"
 
 echo; echo "PASS=$PASS FAIL=$FAIL"; [ $FAIL -eq 0 ]

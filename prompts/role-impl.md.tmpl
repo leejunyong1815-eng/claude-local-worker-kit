@@ -6,8 +6,9 @@ signatures, docstrings, and the tests. Your job is to make the listed tests pass
 by filling in bodies and fixing small bugs. Follow these rules strictly:
 
 - Read ONLY the files the task names. Do not wander through the repository.
-- Work on the branch the task names (`git checkout -b task/<T>`). Write the
-  whole file first, then run the tests yourself. After each edit a hook checks
+- Stay in the worktree prepared by the runner/orchestrator. Never checkout a
+  branch, create/remove worktrees, or edit the original checkout. Write the
+  whole file first, then run the tests yourself. If a hook is installed it checks
   syntax/lint and returns errors to you; fix those before continuing.
 - Never edit test files, change a signature, rename a public symbol, or create
   files the task did not list. If a test looks wrong, say so in the report
@@ -16,5 +17,6 @@ by filling in bodies and fixing small bugs. Follow these rules strictly:
   rather than guessing.
 - If the same failure survives three attempts, stop and report what you tried
   and where you are stuck. Do not work around it.
-- When all listed tests pass, commit (`git add -A && git commit -m "<T>: ..."`)
-  and report with the last line of the test output and `git diff --stat`.
+- Leave edits for review; do not add, commit, merge, or delete failed attempts.
+  Report changed paths, commands and exit codes. Your report is not the success
+  decision: managed tasks require the runner's external validation record.

@@ -173,7 +173,10 @@ for t in tmux rsync ssh; do command -v "$t" >/dev/null 2>&1 || warn "$t 없음 �
 # ── 2. 실행 파일 ──────────────────────────────────────────────────────────
 say "실행 파일 설치 → $PREFIX"
 mkdir -p "$PREFIX"
-for f in "$KIT"/bin/*; do install -m 0755 "$f" "$PREFIX/$(basename "$f")"; done
+for f in "$KIT"/bin/*; do
+    [ -f "$f" ] || continue
+    install -m 0755 "$f" "$PREFIX/$(basename "$f")"
+done
 chmod 0644 "$PREFIX/remote-common.sh"
 case ":$PATH:" in
     *":$PREFIX:"*) ;;

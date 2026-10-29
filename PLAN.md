@@ -236,6 +236,23 @@ Claude 가 테스트를 촘촘히 써 주면(분업 규칙 1) 잡히는 유형. 
 턴 수가 적어 태스크당 시간은 비슷하거나 짧다. 분업 규칙(Claude 가 스켈레톤·테스트, 워커가 채우기)은 그대로 유효하되, 이 모델에는 "모듈 하나 통째로" 수준의
 태스크를 맡겨도 된다는 근거가 생겼다. 승격 규칙(2회 실패 → Claude 직접)은 유지.
 
+## 4l. 관리형 구현 위임 1차 (2026-10-30)
+
+- 기존 `claude-worker` 설정·프로필·공개 비대화 CLI를 재사용하는 `bin/worker-task` 추가.
+  `submit/run/status/result/cancel`, 명시적 `--retry`. 기존 대화형 실행기와 세션 메시징은 유지.
+- 등록 시 기준 커밋 고정 및 명세 복사, 실행 시 detached worktree와 시도별 로그·diff·결과 생성.
+  원본 미커밋 입력 제외/의존성 차단. 원본 checkout·index를 바꾸거나 자동 stash·commit·merge·삭제하지 않음.
+- 태스크별 flock + 원자적 JSON 저장, PID/시작 시각/boot ID 기반 복구, 실행별 프로세스 그룹 취소,
+  워커/검증 시간 제한 분리. 자동 재실행 없음. 실패·취소·중단 시도 보존.
+- 기준 파일 해시 대비 허용/보호 경로 검사(커밋·미추적·ignored 포함), 외부 검증 실제 종료 코드,
+  검증 전후/성공 조회 시 파일 해시 대조. 워커 자연어 보고는 성공 증거가 아님.
+- 역할·태스크 양식의 임의 checkout·전체 add·자동 commit·실패 브랜치 삭제 지침 제거.
+  관리 모드 훅은 로컬 로그·문법 검사 캐시를 만들지 않음. 설치/제거에 새 CLI 연결.
+- 오프라인: `tests/test_worker_task.py` 16 tests(실제 임시 Git + 모의 Claude), `tests/selftest.sh` 116 PASS.
+  자체 검사의 기본 Claude/컨텍스트 탐지를 모의화. `--real-cli`는 설치된 CLI 버전 확인용, 모델 호출 없음.
+- 실제 모델/서버 연결 및 대규모 벤치마크는 실행하지 않음. 관리 모드는 현재 Linux와 로컬 파일시스템 전용,
+  submodule 미지원. worktree는 보안 샌드박스가 아님. 상세 사용법과 제한: `docs/MANAGED_TASKS.md`.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),

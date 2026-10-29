@@ -23,11 +23,14 @@ TEST_ON="${TEST_ON:-\.py$}"         # 이 정규식에 맞는 파일을 고쳤�
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}" # 초. 넘기면 실패로 치지 않고 로그에만 남긴다
 TAIL_LINES="${TAIL_LINES:-40}"
 LOG="$ROOT/agents/hooks/last-check.log"
+# Managed mode already collects process logs outside the worktree. Do not create
+# an ignored but out-of-policy log alongside the source or persist raw secrets.
+[ "${WORKER_TASK_MANAGED:-0}" = 1 ] && LOG=/dev/null
 
 fail=0; out=""
 case "$FILE" in
   *.py)
-    msg="$(python3 -m py_compile "$FILE" 2>&1)" || { fail=1; out+="[syntax] $msg"$'\n'; }
+    msg="$(python3 -c 'import sys; compile(open(sys.argv[1], "rb").read(), sys.argv[1], "exec")' "$FILE" 2>&1)" || { fail=1; out+="[syntax] $msg"$'\n'; }
     if [ $fail -eq 0 ]; then
       if [ "$LINT_PY" = auto ]; then
         if command -v ruff >/dev/null 2>&1; then LINT_PY=ruff

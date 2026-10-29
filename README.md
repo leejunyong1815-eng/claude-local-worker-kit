@@ -25,6 +25,10 @@ Claude Code 세션 두 개를 짝지어 쓰는 구성이다.
 
 처음이면 **[docs/FIRST_RUN.md](docs/FIRST_RUN.md)** 를 따라 10분짜리 시운전을 한 번 하고 오는 것이 가장 빠르다.
 
+코드를 수정하는 위임에는 명시적 관리 명령 **`worker-task submit/run/status/result/cancel`** 을 쓸 수 있다.
+태스크마다 별도 worktree에서 기존 워커를 실행하고, 상태·시도·로그를 남기며 외부 검증으로 성공을 판정한다.
+기존 대화형 사용법은 그대로다. [관리 모드 사용법과 제한](docs/MANAGED_TASKS.md)을 먼저 읽는다.
+
 ## 1. 요구 사항
 
 | 항목 | 조건 |
@@ -73,6 +77,7 @@ FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를
 |---|---|
 | `~/.local/bin/claude-main`, `claude-worker`, `claude-duo` | 실행기 |
 | `~/.local/bin/llm-probe` | 서버 점검 |
+| `~/.local/bin/worker-task` | 선택적 태스크 관리·worktree 격리·외부 검증 (Linux) |
 | `~/.local/bin/remote-{info,sync,run,submit,fetch}` | 원격 노드 실행 (COMPUTE_HOST 설정 시) |
 | `~/.config/claude-worker/env` (, `env.impl`, `env.vega` …) | 워커의 서버·모델·토큰 (권한 0600). 프로필마다 하나 |
 | `~/.config/claude-worker/worker.md` (, `worker.impl.md` …) | 워커 시스템 프롬프트 (env 에서 자동 생성) |
@@ -138,8 +143,8 @@ project-init ~/my-project     # AGENTS.md, KICKOFF_PROMPT.md, agents/(역할·�
 |---|---|---|
 | 설계·분해 | 오케스트레이터(Claude) | 파일·함수 경계, 데이터 흐름 |
 | 스켈레톤·테스트 | 오케스트레이터 | 시그니처·docstring 이 든 스켈레톤과 테스트 파일을 **직접** 쓴다 |
-| 채우기·실행·반복 | `@llm-worker-impl` | 본문을 채워 테스트를 통과시킨다. 읽을 파일 목록을 받고, 브랜치 `task/<T>` 에서 일한다 |
-| 검토 | 오케스트레이터 | `git diff` 를 읽고 테스트를 직접 돌린 뒤 머지. 같은 태스크가 두 번 실패하면 직접 구현(승격) |
+| 채우기·실행·반복 | 구현 워커 | 관리 모드에서는 실행기가 준비한 worktree의 본문을 채우고 수정본을 남긴다. 수동 모드는 오케스트레이터가 별도 작업 공간을 먼저 준비한다 |
+| 검토 | 오케스트레이터 | 외부 검증 기록과 diff를 검토하고 반영을 결정한다. 같은 태스크가 두 번 실패하면 직접 구현(승격) |
 
 이를 돕는 장치 네 가지.
 
@@ -262,7 +267,7 @@ llm-probe                                         # 재점검 (프로필은 llm-
 ```
 
 설정 키 설명은 `config/worker.env.example` 에 있다. 서버를 바꿀 때는 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>` (`impl` = 같은 모델의 구현 전용 워커, `vega` = LLM 서버 llama.cpp 직접, 그 외 이름 = 다른 모델을 목록에서 고름).
+세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>` (`impl` = 같은 모델의 구현 전용 워커, `vega` = 게이트웨이에서 LLM 서버 llama.cpp 우선, 그 외 이름 = 다른 모델을 목록에서 고름).
 
 ## 7. 서버 쪽 구성 (관리자용)
 
@@ -282,7 +287,8 @@ llama.cpp 는 `--reasoning-budget <토큰>`, vLLM/SGLang 은 reasoning parser �
 
 ## 8. 문제 해결·제거
 
-증상별 해결은 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). 자체 검사는 `tests/selftest.sh` (네트워크 불필요).
+증상별 해결은 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). 자체 검사는 `bash tests/selftest.sh` (Claude 설치·네트워크 불필요).
+관리 모드 회귀 검사는 `python3 -B -m unittest discover -s tests -p 'test_worker_task.py' -v`.
 제거는 `./uninstall.sh` (설정까지 지우려면 `--purge`).
 
 ## 파일 구성
