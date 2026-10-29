@@ -175,6 +175,30 @@ claude-local-worker-kit/
 Claude 가 테스트를 촘촘히 써 주면(분업 규칙 1) 잡히는 유형. H1(파서)은 진짜 설계 문제라 승격 규칙 대상.
 실행 비용: 태스크당 2~4분, 턴 4~14. 워커가 테스트 파일을 고친 경우는 없었다.
 
+## 4j. 훅 유무 비교 (2026-10-29, 사용자 요청: "훅 없이도 돌려서 비교")
+
+같은 10개 태스크를 `bench/run.sh -P impl --no-hooks` 로 재실행 (`bench/results/2026-10-29_impl-all-nohooks.md`). 각 조건 1회라 분산은 감안해야 한다.
+
+| 태스크 | 훅(편집마다 테스트) | 훅 없음 | 훅 발동/실패 횟수(훅 실행) |
+|---|---|---|---|
+| B1_bugfix | FAIL 7/8, 66s | FAIL 7/8, 66s | 1/0 |
+| B2_signature | PASS, 132s | PASS, 74s | 3/0 |
+| B3_cli_flag | PASS, 109s | PASS, 71s | 1/0 |
+| B4_refactor | PASS, 125s | PASS, 90s | 4/0 |
+| B5_module_spec | PASS, 100s | PASS, 111s | 1/0 |
+| B6_module_skeleton | PASS, 128s | PASS, 74s | 1/0 |
+| H1_expr_parser | FAIL 12/20, 시간 초과 1200s | FAIL 18/20, 302s | 1/1 |
+| H2_scheduler | FAIL 10/12, 225s | PASS, 152s | 3/2 |
+| H3_json_patch | FAIL 18/19, 214s | PASS, 821s (19턴) | 4/1 |
+| H4_multifile_txn | FAIL 8/9, 186s | PASS, 310s (26턴) | 4/3 |
+| **합계** | **5/10** | **8/10** | |
+
+읽기: 기본 태스크는 같고, 어려운 태스크는 훅 없는 쪽이 3/4 대 0/4 로 낫다. 훅이 실패를 돌려준 태스크(H1~H4)가 정확히 성적이 나빠진 태스크다.
+메커니즘 추정: 모듈을 반쯤 쓴 시점에 `pytest -x` 의 첫 실패가 들이닥치면 모델이 그 실패를 쫓느라 설계를 끝내지 못한다(파서는 20분을 다 씀).
+훅이 문법 오류를 잡은 경우는 없었다(실패는 전부 테스트 실패).
+조치: 훅 기본을 **문법·lint 만**(`TEST_CMD=none`)으로 바꾸고, 편집마다 테스트는 `check.conf` 의 `TEST_CMD="auto"` 로 옵트인. ROLE_IMPLEMENTER 와 impl 프롬프트도
+"파일 전체를 먼저 쓰고 테스트를 스스로 돌린다"로 수정. 남는 결론은 4i 와 같다: 놓치는 것은 명세 구석 조항이므로 Claude 가 테스트를 촘촘히 써 주는 분업이 핵심.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),

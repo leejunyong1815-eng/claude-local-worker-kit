@@ -80,12 +80,15 @@ echo "x" > "$TMP/proj/AGENTS.md"
 t env CLAUDE_WORKER_KIT="$KIT" "$TMP/bin/project-init" "$TMP/proj"
 t test "$(cat "$TMP/proj/AGENTS.md")" = "x"                              # 기존 파일 유지
 mkdir -p "$TMP/proj/tests"; printf 'from a import f\ndef test_f(): assert f(2) == 4\n' > "$TMP/proj/tests/test_a.py"
+printf 'TEST_CMD="auto"\n' > "$TMP/proj/agents/hooks/check.conf"                     # 기본은 테스트 끔 → 이 검사에서는 켠다
 printf 'def f(x):\n    return x*3\n' > "$TMP/proj/a.py"
 hook() { printf '{"tool_name":"Write","tool_input":{"file_path":"%s"}}' "$TMP/proj/a.py" | CLAUDE_PROJECT_DIR="$TMP/proj" "$TMP/proj/agents/hooks/post-edit-check.sh"; }
 tn hook                                                                  # 테스트 실패 → 종료 2
 t grep -q 'assert 6 == 4' "$TMP/proj/agents/hooks/last-check.log"
 printf 'def f(x):\n    return x*2\n' > "$TMP/proj/a.py"
 t hook                                                                   # 통과 → 종료 0
+rm -f "$TMP/proj/agents/hooks/check.conf"; printf 'def f(x):\n    return x*3\n' > "$TMP/proj/a.py"
+t hook                                                                   # 기본(테스트 끔): 문법만 보므로 통과
 printf 'def f(x:\n' > "$TMP/proj/a.py"
 tn hook                                                                  # 문법 오류 → 종료 2
 printf '{"tool_input":{"file_path":"/etc/hostname"}}' > "$TMP/outside.json"

@@ -16,7 +16,9 @@ CONF="$ROOT/agents/hooks/check.conf"
 # shellcheck disable=SC1090
 [ -f "$CONF" ] && source "$CONF"
 LINT_PY="${LINT_PY:-auto}"          # auto | ruff | pyflakes | none
-TEST_CMD="${TEST_CMD:-auto}"        # auto | "<명령>" | none   (auto: tests/ 가 있으면 pytest -x -q)
+TEST_CMD="${TEST_CMD:-none}"        # none(기본: 문법·lint 만) | auto(tests/ 가 있으면 pytest -x -q) | "<명령>"
+                                    # 기본이 none 인 이유: 2026-10-29 벤치마크에서 편집마다 테스트를 돌려 주면 어려운 태스크 성적이 오히려 나빠졌다
+                                    # (반쯤 쓴 모듈의 첫 실패를 쫓느라 설계를 못 끝냄). 테스트는 워커가 스스로 돌린다. 필요하면 check.conf 에서 auto.
 TEST_ON="${TEST_ON:-\.py$}"         # 이 정규식에 맞는 파일을 고쳤을 때만 테스트를 돌린다
 TEST_TIMEOUT="${TEST_TIMEOUT:-120}" # 초. 넘기면 실패로 치지 않고 로그에만 남긴다
 TAIL_LINES="${TAIL_LINES:-40}"

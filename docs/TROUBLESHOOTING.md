@@ -85,8 +85,8 @@ env 가 `:8080`(LLM 서버 llama.cpp 직접: 약 200~350 tok/s, 생성 17 tok/s)
 
 ## 편집 후 검사 훅 (project-init 이 넣는 .claude/settings.json)
 
-**파일을 고칠 때마다 "post-edit-check FAILED" 가 뜬다** — 정상 동작이다. 훅이 문법·lint·테스트를 돌려 실패를 모델에게 돌려준 것. 모델이 고치면 사라진다.
-테스트가 원래부터 깨져 있으면 먼저 그 테스트를 정리하거나 `agents/hooks/check.conf` 의 `TEST_CMD` 를 통과하는 부분 집합으로 좁힌다.
+**파일을 고칠 때마다 "post-edit-check FAILED" 가 뜬다** — 정상 동작이다. 훅이 문법·lint(설정하면 테스트까지)를 돌려 실패를 모델에게 돌려준 것. 모델이 고치면 사라진다.
+`TEST_CMD="auto"` 를 켰는데 테스트가 원래부터 깨져 있으면 먼저 그 테스트를 정리하거나 통과하는 부분 집합으로 좁힌다. 기본은 테스트 끔이다(벤치마크에서 역효과).
 
 **편집이 느리다 / 훅이 매번 오래 돈다** — 테스트 묶음이 크다. `check.conf` 에 `TEST_CMD="python3 -m pytest -x -q tests/unit"` 처럼 빠른 집합을 적거나
 `TEST_ON` 으로 테스트를 돌릴 파일 패턴을 좁힌다. `TEST_TIMEOUT`(기본 120초) 을 넘기면 실패로 치지 않고 `agents/hooks/last-check.log` 에만 남긴다.

@@ -15,8 +15,8 @@
 - 모든 숫자에는 출처(스크립트, config, 커밋 해시, 노드, 날짜)가 붙는다. 숫자 없는 주장은 받지 않는다.
 
 ## 자동 검사
-- `.claude/settings.json` 의 PostToolUse 훅이 파일을 고칠 때마다 `agents/hooks/post-edit-check.sh` 를 돌린다 (문법 → lint → 테스트).
-  실패하면 그 출력이 워커의 다음 턴에 들어간다. 테스트 명령·시간 제한은 `agents/hooks/check.conf` 에서 바꾼다.
+- `.claude/settings.json` 의 PostToolUse 훅이 파일을 고칠 때마다 `agents/hooks/post-edit-check.sh` 를 돌린다 (문법 → lint; 테스트는 기본 끔).
+  실패하면 그 출력이 워커의 다음 턴에 들어간다. 편집마다 테스트까지 돌리려면 `agents/hooks/check.conf` 에 `TEST_CMD="auto"`.
 
 ## 흐름
 1. Orchestrator 가 태스크를 고르고, 구현이면 스켈레톤과 테스트를 먼저 쓴 뒤 워커에 배정: `Ask @llm-worker-impl to ...`
