@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# project-init — 프로젝트에 오케스트레이터·워커 규칙 파일(키트의 templates/project)을 넣는다.
+# 사용: project-init [프로젝트 디렉터리]      (기본: 현재 디렉터리)
+#   넣는 것: AGENTS.md, KICKOFF_PROMPT.md, agents/ (역할·태스크 양식·훅), .claude/settings.json (편집 후 자동 검사 훅)
+#   이미 있는 파일은 덮어쓰지 않는다. .claude/settings.json 이 이미 있으면 훅 항목을 직접 합치라고 안내한다.
+set -euo pipefail
+DIR="$(cd "${1:-$PWD}" && pwd)"
+CONF_DIR="${CLAUDE_WORKER_CONF_DIR:-$HOME/.config/claude-worker}"
+KIT="${CLAUDE_WORKER_KIT:-}"
+[ -n "$KIT" ] || { [ -f "$CONF_DIR/kit_dir" ] && KIT="$(cat "$CONF_DIR/kit_dir")"; } || true
+[ -n "$KIT" ] || { d="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"; [ -d "$d/templates/project" ] && KIT="$d"; } || true
+[ -n "$KIT" ] || { [ -d "$HOME/claude-local-worker-kit/templates/project" ] && KIT="$HOME/claude-local-worker-kit"; } || true
+[ -n "$KIT" ] && [ -d "$KIT/templates/project" ] || { echo "project-init: 키트 디렉터리를 못 찾았습니다. CLAUDE_WORKER_KIT=<키트 경로> 로 지정하세요." >&2; exit 2; }
+SRC="$KIT/templates/project"
+
+added=0; kept=0
+copy_tree() { # copy_tree <상대경로>  (파일 단위로, 기존 파일은 유지)
+    local rel="$1"
+    if [ -d "$SRC/$rel" ]; then
+        while IFS= read -r -d '' f; do
+            local r="${f#"$SRC"/}"
+            if [ -e "$DIR/$r" ]; then kept=$((kept+1)); else mkdir -p "$(dirname "$DIR/$r")"; cp -p "$f" "$DIR/$r"; echo "  + $r"; added=$((added+1)); fi
+        done < <(find "$SRC/$rel" -type f -print0)
+    elif [ -e "$DIR/$rel" ]; then kept=$((kept+1))
+    else mkdir -p "$(dirname "$DIR/$rel")"; cp -p "$SRC/$rel" "$DIR/$rel"; echo "  + $rel"; added=$((added+1)); fi
+}
+echo "project-init → $DIR"
+copy_tree AGENTS.md; copy_tree KICKOFF_PROMPT.md; copy_tree agents
+chmod +x "$DIR"/agents/hooks/*.sh 2>/dev/null || true
+if [ -e "$DIR/.claude/settings.json" ]; then
+    if grep -q 'post-edit-check.sh' "$DIR/.claude/settings.json"; then kept=$((kept+1))
+    else
+        echo "  ! .claude/settings.json 이 이미 있습니다. 아래 hooks 항목을 직접 합치세요:"
+        sed 's/^/      /' "$SRC/.claude/settings.json"
+    fi
+else copy_tree .claude/settings.json; fi
+echo "  추가 $added, 유지 $kept.  다음: AGENTS.md 와 agents/ROLE_*.md 를 프로젝트에 맞게 고치고, KICKOFF_PROMPT.md 를 오케스트레이터 창에 붙여 넣는다."

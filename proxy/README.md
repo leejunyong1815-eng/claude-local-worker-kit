@@ -55,3 +55,10 @@ llm-probe --models                                           # 등록된 모델 
 
 `llm-probe` 가 2)~4) 에서 FAIL 이고 9) "OpenAI 형식은 동작" 이면 같은 설정을 자기 PC 에 띄우고 `model_list` 의 `api_base` 를 그 서버로 바꾼 뒤
 env 의 `LLM_BASE_URL="http://localhost:4000"` 으로 쓴다. vLLM / SGLang / llama.cpp / Ollama(≥0.14) 최신판은 `/v1/messages` 를 자체 지원하므로 보통 필요 없다.
+
+## 사고 토큰 상한 (선택, 관리자)
+
+워커 모델이 매 턴 길게 사고해 느리면 **엔진**에서 제한한다. 클라이언트(Claude Code 2.1.312) 는 `thinking: adaptive` 만 보내고 예산 필드를 보내지 않으며,
+이 파일의 `litellm_params` 에 `thinking: {"type":"enabled","budget_tokens":N}` 을 넣어도 요청의 adaptive 가 이긴다(2026-10-29 로컬 LiteLLM 1.106.6 으로 확인).
+`output_config.effort` 도 백엔드가 무시한다. llama.cpp 는 서버 인자 `--reasoning-budget N`(토큰), vLLM/SGLang 은 reasoning 관련 옵션을 쓴다.
+코딩 태스크 기준 2k~8k 토큰이 보통 충분하다.

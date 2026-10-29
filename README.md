@@ -83,13 +83,14 @@ GB10 모델이 LiteLLM 에 등록된 뒤 그 모델용 워커를 추가하려면
 ```bash
 cd ~/my-project
 claude-duo               # 오케스트레이터 + 기본 워커
-claude-duo -P gb10       # + GB10 모델 워커 (프로필을 만들었을 때)
+claude-duo -P impl       # + 구현 전용 워커 @llm-worker-impl (설치 때 만든 프로필)
+claude-duo -P impl,gb10  # + GB10 모델 워커까지 (GB10 프로필을 만들었을 때)
 ```
 
 tmux 창이 열린다. 왼쪽이 오케스트레이터, 오른쪽이 워커다. 창 사이 이동은 `Ctrl-b` 다음 화살표,
 떼어 두기는 `Ctrl-b d`, 다시 붙기는 `claude-duo`, 끝내기는 `claude-duo --kill`.
 
-tmux 가 싫으면 터미널마다 `claude-main`, `claude-worker`(, `claude-worker -P gb10`) 를 **같은 프로젝트 디렉터리**에서 띄운다.
+tmux 가 싫으면 터미널마다 `claude-main`, `claude-worker`(, `claude-worker -P impl`) 를 **같은 프로젝트 디렉터리**에서 띄운다.
 
 처음 여는 프로젝트 디렉터리면 두 세션 모두 "이 폴더를 신뢰하느냐"고 묻는다. 둘 다 예.
 
@@ -118,14 +119,40 @@ without changing public function signatures, re-run, and report the diff summary
 - 보고 양식
 
 "알아서 해 줘" 식 지시는 로컬 모델이 엉뚱한 곳을 헤매게 한다.
-오케스트레이터에게 이 규칙을 지키게 하려면 `templates/project/` 를 프로젝트에 복사한다.
+오케스트레이터에게 이 규칙을 지키게 하려면 프로젝트에 규칙 파일을 넣는다 (기존 파일은 덮어쓰지 않는다).
 
 ```bash
-cp -r ~/claude-local-worker-kit/templates/project/{AGENTS.md,agents,KICKOFF_PROMPT.md} ~/my-project/
+project-init ~/my-project     # AGENTS.md, KICKOFF_PROMPT.md, agents/(역할·태스크 양식·검사 훅), .claude/settings.json
 ```
 
 `AGENTS.md` 와 `agents/ROLE_*.md` 를 프로젝트에 맞게 고친 뒤, `KICKOFF_PROMPT.md` 내용을 오케스트레이터 창에
 붙여 넣으면 오케스트레이터가 규칙을 읽고 태스크를 배정하기 시작한다.
+
+### 구현 작업을 워커에게 맡길 때
+
+로컬 모델은 "짧은 명세를 받아 채우고, 돌리고, 고치는" 일은 잘하지만 **설계 판단과 긴 맥락 유지에는 약하다**.
+그래서 킷은 구현 작업을 다음처럼 나누도록 오케스트레이터를 지도한다 (`agents/ORCHESTRATOR.md`).
+
+| 단계 | 누가 | 내용 |
+|---|---|---|
+| 설계·분해 | 오케스트레이터(Claude) | 파일·함수 경계, 데이터 흐름 |
+| 스켈레톤·테스트 | 오케스트레이터 | 시그니처·docstring 이 든 스켈레톤과 테스트 파일을 **직접** 쓴다 |
+| 채우기·실행·반복 | `@llm-worker-impl` | 본문을 채워 테스트를 통과시킨다. 읽을 파일 목록을 받고, 브랜치 `task/<T>` 에서 일한다 |
+| 검토 | 오케스트레이터 | `git diff` 를 읽고 테스트를 직접 돌린 뒤 머지. 같은 태스크가 두 번 실패하면 직접 구현(승격) |
+
+이를 돕는 장치 네 가지.
+
+- **편집 후 자동 검사 훅** — `project-init` 이 넣는 `.claude/settings.json` 이 파일을 고칠 때마다 `agents/hooks/post-edit-check.sh` 를 돌린다
+  (문법 → lint → `pytest -x -q`). 실패 출력이 워커의 다음 턴에 바로 들어가므로, 모델이 "테스트 돌리기"를 잊어도 훅은 잊지 않는다.
+  테스트 명령·시간 제한은 `agents/hooks/check.conf`. 오케스트레이터 세션에도 같은 훅이 걸린다.
+- **구현 전용 워커 `@llm-worker-impl`** — 같은 모델이지만 시스템 프롬프트에 구현 규칙(지정 파일만 읽기, 테스트 수정 금지, 편집마다 검사 결과 반영, 세 번 막히면 보고)이 붙는다.
+  설치 때 만들어지며(`install.sh --profile impl` 로도 추가), `claude-duo -P impl` 로 띄운다.
+- **구현 태스크 양식** `agents/tasks/T_impl_template.md` — 읽을 파일, 채울 함수 표, 실행 명령, 수용 기준, 브랜치를 한 장에 적는다.
+- **벤치마크** `bench/run.sh` — 워커 혼자 구현 태스크 10개(기본 6 + 어려운 4)를 풀게 하고 숨은 테스트로 채점한다. 모델·서버·프롬프트를 바꿨을 때
+  "어디까지 맡길 수 있는지"를 숫자로 본다. 결과는 `bench/results/`. 자세한 것은 [bench/README.md](bench/README.md).
+
+사고(thinking) 조절에 대해: Claude Code 2.1.312 는 모든 요청에 `thinking: adaptive` 를 보내고 `MAX_THINKING_TOKENS` 는 무시한다(0 이면 필드만 빠지고 백엔드는 그래도 사고한다).
+`effort` 값도 백엔드가 무시한다. 사고량을 제한하려면 **서버 쪽**(llama.cpp `--reasoning-budget`, vLLM 의 reasoning 옵션)에서 해야 한다 — 7절 관리자 항목.
 
 ### 모델을 나눠 쓰기 (GB10 노드가 붙으면)
 
@@ -216,7 +243,7 @@ llm-probe                                         # 재점검 (프로필은 llm-
 ```
 
 설정 키 설명은 `config/worker.env.example` 에 있다. 서버를 바꿀 때는 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>`.
+세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>` (`impl` = 같은 모델의 구현 전용 워커, `gb10` = GB10 모델).
 
 ## 7. 서버 쪽 구성 (관리자용)
 
@@ -229,6 +256,10 @@ llm-probe                                         # 재점검 (프로필은 llm-
 LiteLLM 설정·실행 방법은 [proxy/README.md](proxy/README.md). 모델을 추가·교체할 때 구성원은 `LLM_MODEL` 만 바꾸면 된다.
 LiteLLM 이 죽었을 때는 env 를 `LLM_BASE_URL=http://1.233.219.134:8080`, `LLM_API_KEY=none` 으로 바꾸면 LLM 서버의 llama.cpp 에 직접 붙는다(느리다).
 
+**사고 토큰 상한(관리자)** — 실측(2026-10-29): 클라이언트의 `effort` 는 백엔드가 무시하고, `thinking.budget_tokens` 는 지키지만 Claude Code 가 그 필드를 보내지 않으며,
+LiteLLM `litellm_params` 에 `thinking` 을 넣어도 요청 값(adaptive)이 이긴다. 따라서 과도한 사고를 줄이려면 엔진에서 제한한다:
+llama.cpp 는 `--reasoning-budget <토큰>`, vLLM/SGLang 은 reasoning parser 의 budget 옵션. 코딩 태스크 기준 2k~8k 토큰이 보통 충분하다.
+
 ## 8. 문제 해결·제거
 
 증상별 해결은 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). 자체 검사는 `tests/selftest.sh` (네트워크 불필요).
@@ -238,11 +269,12 @@ LiteLLM 이 죽었을 때는 env 를 `LLM_BASE_URL=http://1.233.219.134:8080`, `
 
 ```
 install.sh / uninstall.sh      설치·제거 (--profile NAME: 다른 모델용 워커, --render: 프롬프트만 재생성)
-bin/                           실행기·점검·원격 스크립트
+bin/                           실행기·점검·원격 스크립트, project-init(프로젝트에 규칙·훅 넣기)
 config/worker.env.example      설정 키 설명
 prompts/*.tmpl                 워커 시스템 프롬프트 템플릿
 proxy/                         LiteLLM 변환 프록시 (선택)
-templates/project/             프로젝트용 AGENTS.md, 역할 파일, 보고 양식, 시작 프롬프트
+templates/project/             프로젝트용 AGENTS.md, 역할 파일, 구현 태스크 양식, 편집 후 검사 훅, 시작 프롬프트
+bench/                         워커 단독 구현 벤치마크 (tasks/, run.sh, results/)
 tests/selftest.sh              오프라인 자체 검사
 docs/FIRST_RUN.md              첫 실행 시운전
 docs/TROUBLESHOOTING.md        증상별 해결

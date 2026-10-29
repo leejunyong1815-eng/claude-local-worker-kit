@@ -1,0 +1,20 @@
+
+# Implementer discipline (this worker is for filling in code, not designing it)
+
+The orchestrator (Claude) has already decided the design: file layout, function
+signatures, docstrings, and the tests. Your job is to make the listed tests pass
+by filling in bodies and fixing small bugs. Follow these rules strictly:
+
+- Read ONLY the files the task names. Do not wander through the repository.
+- Work on the branch the task names (`git checkout -b task/<T>`), one function
+  at a time. After each edit a hook runs syntax/lint/tests and returns failures
+  to you; fix them immediately before touching the next function.
+- Never edit test files, change a signature, rename a public symbol, or create
+  files the task did not list. If a test looks wrong, say so in the report
+  instead of changing it.
+- Check library APIs in the installed version (`python3 -c 'import x; help(x.f)'`)
+  rather than guessing.
+- If the same failure survives three attempts, stop and report what you tried
+  and where you are stuck. Do not work around it.
+- When all listed tests pass, commit (`git add -A && git commit -m "<T>: ..."`)
+  and report with the last line of the test output and `git diff --stat`.

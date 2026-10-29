@@ -133,6 +133,48 @@ claude-local-worker-kit/
   Vega 는 8건 모두 본문이 비어 있었다 → 그 llama.cpp 빌드는 `thinking: disabled` 를 무시하고 사고를 출력해 200 토큰을 다 쓴 것(직접 접속 때의 프로브 2) 과 같은 현상).
   Claude Code 는 사고를 켠 채 큰 max_tokens 로 요청하므로 영향 없음. 사용자 요청으로 지속 부하·추가 조사는 여기서 중단하고 배포 상태로 커밋.
 
+## 4i. 워커의 "복잡한 코드 작성" 약점 보완 (2026-10-29 오후, 사용자: 모델 교체 빼고 전부 반영)
+
+반영한 것 (templates/project, bin, install.sh, bench):
+1. **분업 규칙** — ORCHESTRATOR.md/AGENTS.md/KICKOFF: 설계·스켈레톤·테스트는 Claude 가 직접 쓰고 워커는 채우기만. 읽을 파일 목록 명시, 태스크 ≤ 20k 토큰.
+   구현 태스크 양식 `agents/tasks/T_impl_template.md`. ROLE_IMPLEMENTER 는 "지정 파일만, 테스트 수정 금지, 세 번 막히면 보고".
+2. **편집 후 자동 검사 훅** `agents/hooks/post-edit-check.sh` (PostToolUse Edit|Write|MultiEdit; 문법→lint→pytest -x; 실패 시 exit 2 로 모델에 되돌림;
+   `check.conf` 로 명령·시간 제한 조절; `last-check.log`). `.claude/settings.json` 과 함께 `bin/project-init` 이 프로젝트에 넣는다(기존 파일 보존).
+3. **브랜치 격리 + diff 검토** — 태스크마다 `task/<T>`, 오케스트레이터는 diff 를 읽고 테스트를 직접 돌린다. `tests/` 변경은 반려.
+4. **승격 규칙** — 같은 태스크 2회 실패 → Claude 가 직접 구현, CAMPAIGN_LOG 에 기록.
+5. **구현 전용 프로필 `impl`** — 같은 모델, `WORKER_ROLE=impl` → `prompts/role-impl.md.tmpl` 이 시스템 프롬프트에 붙음. 설치 때 기본 생성(Y/n), `claude-duo -P impl`.
+   사고 예산은 조절 불가로 판명(아래) → 프로필은 이름·프롬프트만 다르다.
+6. **벤치마크 `bench/`** — 기본 6 + 어려움 4 태스크, 숨은 테스트 채점, `bench/run.sh -P impl [--tier hard] [--no-hooks]`. 기준 해답으로 숨은 테스트 전부 검증함.
+
+사고(thinking) 조절 실측 (Claude Code 2.1.312, 가짜 서버로 요청 본문 캡처 + 게이트웨이 응답 비교):
+- Claude Code 는 모든 요청에 `thinking:{type:adaptive}`, `output_config.effort:high` 를 보낸다. `MAX_THINKING_TOKENS` 는 무시(0 이면 thinking 필드만 빠짐).
+  `CLAUDE_CODE_EFFORT_LEVEL=low|medium` 또는 `--settings '{"effortLevel":"low"}'` 로 effort 는 바뀌지만 **백엔드가 effort 를 무시**(출력 토큰 차이 없음).
+- 백엔드는 `thinking.budget_tokens` 는 지킨다(256 → 출력 261 토큰). `disabled` 는 GB10 만 지키고 Vega 는 무시. 그러나 Claude Code 가 예산을 보내지 않는다.
+- LiteLLM `litellm_params.thinking` 주입(로컬 LiteLLM 1.106.6 으로 시험)도 요청의 adaptive 에 밀려 효과 없음.
+- 결론: 과도한 사고 제한은 엔진 쪽(llama.cpp `--reasoning-budget`, vLLM reasoning 옵션)에서만 가능 → 관리자 항목(README 7절, proxy/README).
+- "ultracode"(Workflow 다중 에이전트)는 Claude Code 클라이언트 기능이라 워커 세션에서도 호출은 되지만 Qwen 이 Qwen 서브에이전트를 지휘하는 꼴이 되어 약점을 배가함.
+  킷의 대응물은 Claude 가 워커 N 개를 지휘하는 `claude-duo -w N`. 워커에 켜지 않음.
+
+벤치마크 결과 (2026-10-29, `bench/results/2026-10-29_impl-all.md`, 프로필 impl, 훅 켬, 게이트웨이 1:1 라우팅):
+
+| 태스크 | 결과 | 숨은 테스트 | 턴 | 시간 | 놓친 것 |
+|---|---|---|---|---|---|
+| B1_bugfix | FAIL | 7/8 | 7 | 66s | docstring 의 "빈 입력 → ValueError" 를 구현 안 함 |
+| B2_signature | PASS | 15/15 | 8 | 132s | |
+| B3_cli_flag | PASS | 5/5 | 5 | 109s | |
+| B4_refactor | PASS | 6/6 | 9 | 125s | |
+| B5_module_spec (스켈레톤 없음) | PASS | 11/11 | 4 | 100s | |
+| B6_module_skeleton | PASS | 11/11 | 5 | 128s | |
+| H1_expr_parser | FAIL | 12/20 | 시간 초과 | 1200s | 우결합·오류 위치·함수 호출 — 20분 안에 못 끝냄 |
+| H2_scheduler | FAIL | 10/12 | 11 | 225s | 의존성 준비 여부를 무시하고 배정(공개 테스트로는 안 잡힘) |
+| H3_json_patch | FAIL | 18/19 | 11 | 214s | 스칼라를 지나는 add 를 오류 대신 무시 |
+| H4_multifile_txn | FAIL | 8/9 | 14 | 186s | 원자성·종료 코드는 맞췄으나 stderr 에 오류 메시지를 안 씀 |
+
+읽기: 기본 태스크(한 모듈, 명세 명확)는 5/6 통과, LRU 캐시는 스켈레톤 없이도 통과 → "전체 코드 작성" 자체가 못 하는 일은 아니다.
+어려운 태스크는 0/4 지만 H2~H4 는 숨은 테스트 1~2개 차이의 근접 실패이고, 놓친 것은 전부 **명세의 구석 조항**(오류 조건·stderr·준비 여부)이다 →
+Claude 가 테스트를 촘촘히 써 주면(분업 규칙 1) 잡히는 유형. H1(파서)은 진짜 설계 문제라 승격 규칙 대상.
+실행 비용: 태스크당 2~4분, 턴 4~14. 워커가 테스트 파일을 고친 경우는 없었다.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),

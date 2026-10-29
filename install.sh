@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # install.sh — Claude 오케스트레이터 + 로컬 LLM 워커 키트 설치
 # 사용: ./install.sh [--prefix DIR] [--non-interactive] [--skip-probe]
-#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   다른 모델용 워커 프로필 추가 (env.NAME, 예: gb10)
+#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   워커 프로필 추가 (env.NAME). impl = 같은 모델의 구현 전용 워커, gb10 = GB10 모델
 #       ./install.sh --render                                            설정 변경 후 워커 프롬프트만 재생성 (모든 프로필)
 #   --prefix DIR        실행 파일 설치 위치 (기본 ~/.local/bin)
 #   --non-interactive   질문 없이 환경변수로 설정: LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_CONTEXT_WINDOW
@@ -45,13 +45,13 @@ ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }
 
 render_prompt() { # render_prompt <env파일> <출력 md>
     # shellcheck disable=SC1090
-    ( source "$1"; export WORKER_NAME COMPUTE_HOST COMPUTE_WORK_DIR COMPUTE_DESC LLM_MODEL LLM_CONTEXT_WINDOW
+    ( source "$1"; export WORKER_NAME WORKER_ROLE COMPUTE_HOST COMPUTE_WORK_DIR COMPUTE_DESC LLM_MODEL LLM_CONTEXT_WINDOW
       python3 - "$KIT/prompts" "$2" <<'PY'
 import os, sys
 from string import Template
 tdir, out = sys.argv[1], sys.argv[2]
 env = {k: os.environ.get(k, "") for k in
-       ("WORKER_NAME", "COMPUTE_HOST", "COMPUTE_WORK_DIR", "COMPUTE_DESC", "LLM_MODEL", "LLM_CONTEXT_WINDOW")}
+       ("WORKER_NAME", "WORKER_ROLE", "COMPUTE_HOST", "COMPUTE_WORK_DIR", "COMPUTE_DESC", "LLM_MODEL", "LLM_CONTEXT_WINDOW")}
 env["WORKER_NAME"] = env["WORKER_NAME"] or "llm-worker"
 env["COMPUTE_WORK_DIR"] = env["COMPUTE_WORK_DIR"] or "claude-work"
 env["LLM_MODEL"] = env["LLM_MODEL"] or "a local model"
@@ -63,6 +63,8 @@ if env["COMPUTE_HOST"]:
 else:
     remote = "\n(No remote compute node is configured. Run everything locally and\nsay so in the report if a task needs more compute than this machine has.)\n"
 env["REMOTE_SECTION"] = remote
+role_file = os.path.join(tdir, f"role-{env['WORKER_ROLE']}.md.tmpl") if env["WORKER_ROLE"] else ""
+env["ROLE_SECTION"] = (Template(open(role_file).read()).safe_substitute(env) if role_file and os.path.exists(role_file) else "")
 text = Template(open(os.path.join(tdir, "worker.md.tmpl")).read()).safe_substitute(env)
 open(out, "w").write(text)
 print(f"    worker prompt → {out}")
@@ -139,6 +141,7 @@ export LLM_DISABLE_PROMPT_CACHING=0
 export LLM_MAX_THINKING_TOKENS=""
 export LLM_CAPABILITIES="${LLM_CAPABILITIES:-}"
 export WORKER_NAME="$name"
+export WORKER_ROLE="${WORKER_ROLE:-$D_ROLE}"
 export COMPUTE_HOST="$chost"
 export COMPUTE_WORK_DIR="${cdir:-claude-work}"
 export COMPUTE_DESC="$cdesc"
@@ -174,17 +177,19 @@ esac
 
 # ── 3. 설정 파일 ──────────────────────────────────────────────────────────
 mkdir -p "$CONF_DIR"; chmod 0700 "$CONF_DIR"
+printf '%s\n' "$KIT" > "$CONF_DIR/kit_dir"   # project-init 이 templates/project 를 찾는 데 쓴다
 if [ -n "$PROFILE" ]; then
     ENV_FILE="$CONF_DIR/env.$PROFILE"
     say "워커 프로필 '$PROFILE' → $ENV_FILE"
     [ -f "$CONF_DIR/env" ] || warn "기본 설정($CONF_DIR/env)이 없습니다. 먼저 ./install.sh 를 돌리는 것이 보통입니다."
-    D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL=""; D_CTX="$LAB_DEFAULT_CTX"   # 같은 LiteLLM, 모델은 다른 것
+    D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL=""; D_CTX="$LAB_DEFAULT_CTX"; D_ROLE=""   # 같은 LiteLLM, 모델은 다른 것
+    if [ "$PROFILE" = "impl" ]; then D_MODEL="$LAB_DEFAULT_MODEL"; D_ROLE="impl"; fi          # 구현 전용: 같은 모델, 구현 규칙이 든 프롬프트
     if [ "$PROFILE" = "gb10" ] && [ -n "$LAB_GB10_MODEL" ]; then D_MODEL="$LAB_GB10_MODEL"; D_CTX="${LAB_GB10_CTX:-$LAB_DEFAULT_CTX}"; fi
     D_NAME="llm-worker-$PROFILE"; INHERIT="$CONF_DIR/env"
 else
     ENV_FILE="$CONF_DIR/env"
     say "설정 → $ENV_FILE"
-    D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL="$LAB_DEFAULT_MODEL"; D_CTX="$LAB_DEFAULT_CTX"; D_NAME="llm-worker"; INHERIT=""
+    D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL="$LAB_DEFAULT_MODEL"; D_CTX="$LAB_DEFAULT_CTX"; D_NAME="llm-worker"; D_ROLE=""; INHERIT=""
 fi
 WRITE_ENV=1
 if [ -f "$ENV_FILE" ]; then
@@ -210,7 +215,24 @@ if [ $PROBE -eq 1 ]; then
     fi
 fi
 
-# ── 6. 다른 모델(GB10) 안내 (기본 설치 때만) ──────────────────────────────
+# ── 6a. 구현 전용 워커 프로필 impl (기본 설치 때만) ───────────────────────
+if [ -z "$PROFILE" ] && [ ! -f "$CONF_DIR/env.impl" ]; then
+    mk=0
+    if [ $INTERACTIVE -eq 1 ]; then
+        read -r -p "    구현 전용 워커 프로필 'impl' (같은 모델, 스켈레톤 채우기·테스트 통과용 규칙)도 만들까요? [Y/n] " a
+        [[ "$a" =~ ^[Nn]$ ]] || mk=1
+    else [ "${WITH_IMPL:-0}" = "1" ] && mk=1; fi
+    if [ $mk -eq 1 ]; then
+        say "워커 프로필 'impl' → $CONF_DIR/env.impl"
+        # 기본 env 를 그대로 물려받고(서버·키·모델·컨텍스트·원격 노드) 이름과 역할만 바꾼다
+        # shellcheck disable=SC1090
+        ( source "$ENV_FILE"; INTERACTIVE=0; D_ROLE="impl"; WORKER_ROLE="impl"; WORKER_NAME="llm-worker-impl"
+          write_env "$CONF_DIR/env.impl" "$LLM_BASE_URL" "$LLM_MODEL" "$LLM_CONTEXT_WINDOW" "llm-worker-impl" "$ENV_FILE" )
+        render_prompt "$CONF_DIR/env.impl" "$CONF_DIR/worker.impl.md"
+    else echo "    (impl 프로필은 나중에 ./install.sh --profile impl 로 추가)"; fi
+fi
+
+# ── 6b. 다른 모델(GB10) 안내 (기본 설치 때만) ─────────────────────────────
 if [ -z "$PROFILE" ] && [ -n "$LAB_GB10_MODEL" ] && [ ! -f "$CONF_DIR/env.gb10" ]; then
     if [ $INTERACTIVE -eq 1 ]; then
         read -r -p "    GB10 노드 모델($LAB_GB10_MODEL) 워커 프로필 'gb10' 도 만들까요? [Y/n] " a
@@ -233,8 +255,9 @@ cat <<MSG
 다음 단계:
   1) 프로젝트 디렉터리로 이동
   2) claude-duo                 # tmux: 오케스트레이터(왼쪽) + 기본 워커(오른쪽)
-     claude-duo -P gb10         # 기본 워커 + GB10 모델 워커 (프로필을 만들었을 때)
-     또는 터미널마다  claude-main  /  claude-worker  /  claude-worker -P gb10
+     claude-duo -P impl         # 기본 워커 + 구현 전용 워커 (프로필을 만들었을 때; GB10 모델도 있으면 -P impl,gb10)
+     또는 터미널마다  claude-main  /  claude-worker  /  claude-worker -P impl
+     project-init ~/my-project  # 프로젝트에 규칙 파일·자동 검사 훅 넣기
   3) 오케스트레이터 대화에서:  Ask @${WN} to <태스크 한 개의 완결된 지시>
   설정 변경 후:  nano $CONF_DIR/env  (또는 env.<프로필>)  &&  $KIT/install.sh --render
 MSG

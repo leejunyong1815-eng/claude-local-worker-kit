@@ -59,7 +59,7 @@ If it fails, halve the batch size once and retry, then report what happened.
 ```
 
 경로는 절대 경로로, 성공 조건은 숫자로, 실패 시 행동까지 적는다. 오케스트레이터에게 이 양식을 지키게 하려면
-`templates/project/` 를 프로젝트에 복사하고 `KICKOFF_PROMPT.md` 를 붙여 넣는다.
+`project-init ~/my-project` 로 규칙 파일과 검사 훅을 넣고 `KICKOFF_PROMPT.md` 를 붙여 넣는다.
 
 ## 5. 끝내기
 

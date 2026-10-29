@@ -83,6 +83,21 @@ env 가 `:8080`(LLM 서버 llama.cpp 직접: 약 200~350 tok/s, 생성 17 tok/s)
 **워커가 답을 하지 않고 멈춘다** — 워커 창을 본다. 권한 질문에 멈춰 있을 수 있다. 워커 세션에서 `/permissions` 로 자주 쓰는 명령을 허용하거나,
 프로젝트 `.claude/settings.local.json` 에 allow 규칙을 둔다.
 
+## 편집 후 검사 훅 (project-init 이 넣는 .claude/settings.json)
+
+**파일을 고칠 때마다 "post-edit-check FAILED" 가 뜬다** — 정상 동작이다. 훅이 문법·lint·테스트를 돌려 실패를 모델에게 돌려준 것. 모델이 고치면 사라진다.
+테스트가 원래부터 깨져 있으면 먼저 그 테스트를 정리하거나 `agents/hooks/check.conf` 의 `TEST_CMD` 를 통과하는 부분 집합으로 좁힌다.
+
+**편집이 느리다 / 훅이 매번 오래 돈다** — 테스트 묶음이 크다. `check.conf` 에 `TEST_CMD="python3 -m pytest -x -q tests/unit"` 처럼 빠른 집합을 적거나
+`TEST_ON` 으로 테스트를 돌릴 파일 패턴을 좁힌다. `TEST_TIMEOUT`(기본 120초) 을 넘기면 실패로 치지 않고 `agents/hooks/last-check.log` 에만 남긴다.
+
+**훅을 끄고 싶다** — 프로젝트의 `.claude/settings.json` 에서 `hooks` 항목을 지운다. 특정 파일 종류만 끄려면 `check.conf` 에 `TEST_CMD=none`, `LINT_PY=none`.
+
+**훅이 전혀 안 돈다** — `agents/hooks/post-edit-check.sh` 에 실행 권한이 있는지(`chmod +x`), 세션을 프로젝트 루트에서 띄웠는지 확인. 훅은 `$CLAUDE_PROJECT_DIR` 기준으로 찾는다.
+기록은 `agents/hooks/last-check.log`.
+
+**워커가 테스트 파일을 고쳐 놓고 "통과"라고 보고한다** — 오케스트레이터 검토 절차대로 `git diff --stat -- tests/` 를 본다. 테스트 변경은 반려하고 브랜치를 버린다.
+
 ## 원격 노드
 
 **`remote: COMPUTE_HOST 가 비어 있습니다`** — env 에 ssh 별칭 지정 후 `install.sh --render`.
