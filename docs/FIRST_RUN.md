@@ -1,13 +1,17 @@
-# 첫 실행 시운전 (10분)
+# 대화형 연결 시운전 (10분)
 
-설치 직후 모든 조각이 맞물리는지 빈 디렉터리에서 한 번 확인한다. 각 단계에서 무엇이 보여야 하는지 적어 두었다.
+설치 직후 빈 디렉터리에서 메인과 워커의 메시징·Bash 실행을 확인한다. 실제 모델 요청이 발생한다.
+여기서는 파일을 조회하는 수동 모드를 확인하며, 자동 작업 공간 격리·완료 검증은 적용되지 않는다.
+코드 수정 위임은 [관리 모드](MANAGED_TASKS.md)로 진행한다.
 
 ## 0. 준비 확인
 
 ```bash
 claude --version          # 2.1.224 이상
 llm-probe                 # 마지막 줄: 판정: 직접 연결 가능
-mkdir -p ~/kit-test && cd ~/kit-test && echo hello > a.txt
+KIT_TEST_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claude-kit-test.XXXXXX")
+cd "$KIT_TEST_DIR"
+echo hello > a.txt
 ```
 
 ## 1. 두 세션 띄우기
@@ -20,7 +24,8 @@ claude-duo
 - 오른쪽 창: 모델이 설정한 로컬 모델 id 로 표시된다. 그 아래 "Model … isn't recognized · context assumed to be 200k" 경고가 있을 수 있다. 정상이다.
 - 두 창 모두 "Do you trust the files in this folder?" 를 물으면 Yes.
 
-워커 창에 로컬 모델이 아니라 Claude 모델이 보이면 설정 파일을 못 읽은 것이다. `cat ~/.config/claude-worker/env` 확인.
+워커 창에 로컬 모델이 아니라 Claude 모델이 보이면 설정 파일 경로와 `LLM_MODEL` 값을 편집기로 확인한다.
+설정에는 API 키가 있으므로 파일 전체를 보고서·대화에 붙여 넣지 않는다.
 
 ## 2. 연결 확인
 
@@ -43,30 +48,28 @@ Ask @llm-worker to: In the current directory, run `wc -c a.txt` with the Bash to
 - 오른쪽 창에 메시지가 도착하고 워커가 Bash 실행 허가를 묻는다. 허락한다.
 - 몇 초 뒤 왼쪽 창에 워커의 답(`6 a.txt` 같은 내용)이 나타난다.
 
-여기까지 되면 구성은 끝났다.
+여기까지 되면 대화형 메시징과 도구 실행 연결이 확인된 것이다. 코드 수정·외부 검증 경로는 아래 관리 모드로 별도 확인한다.
 
-## 4. 실제 작업 모양
+## 4. 다음 작업 선택
 
-실제 프로젝트에서는 지시가 길어진다. 아래 모양을 기준으로 삼는다.
+조회·테스트 실행은 수동 메시징으로 맡길 수 있다. 프로젝트 경로, 실행 명령, 시간 제한, 보고할 종료 코드와 결과를
+지시에 넣는다. 실패한 소스를 같은 디렉터리에서 바로 고치게 하지 않고 별도 구현 태스크로 분리한다.
 
-```
-Ask @llm-worker to: First read /home/me/proj/agents/ROLE_RUNNER.md and act as RUNNER.
-Task file: /home/me/proj/agents/tasks/T1_baseline.md.
-In /home/me/proj run `remote-run "bash scripts/setup_env.sh && python train.py --config configs/small.yaml --tag smoke"`.
-Save results under results/t1_smoke/ and write results/t1_smoke/REPORT.md in the format of agents/HANDOFF_TEMPLATE.md.
-Acceptance: training finishes without error, final loss < 1.0, GPU model and commit hash recorded. Budget 30 min.
-If it fails, halve the batch size once and retry, then report what happened.
-```
+코드 수정이 필요하면 실제 프로젝트의 Git 저장소로 돌아가 [관리 모드 빠른 시작](../README.md#관리-모드로-코드-수정-맡기기)을 따른다.
+필요한 스켈레톤·테스트가 기준 커밋에 포함되어 있어야 한다. `worker-task`는 대화형 워커와 별도 프로세스를 실행하므로
+이 시운전의 `claude-duo`를 계속 켜 둘 필요는 없다. 등록→실행→결과 확인 과정과 성공 판정은 [상세 문서](MANAGED_TASKS.md)에 있다.
 
-경로는 절대 경로로, 성공 조건은 숫자로, 실패 시 행동까지 적는다. 오케스트레이터에게 이 양식을 지키게 하려면
-`project-init ~/my-project` 로 규칙 파일과 검사 훅을 넣고 `KICKOFF_PROMPT.md` 를 붙여 넣는다.
+프로젝트에 역할·태스크 양식·검사 훅을 넣으려면 `project-init ~/my-project`를 쓴다. 기존 파일은 덮어쓰지 않으므로
+이미 초기화한 프로젝트는 템플릿과 차이를 확인해 갱신한다. 이때 새로 생긴 파일 역시 관리 태스크의 기준 커밋에 포함해야 전달된다.
+원격 계산 노드 사용은 [README 5절](../README.md#5-원격-계산-노드)을 참고한다.
 
 ## 5. 끝내기
 
 ```bash
 claude-duo --kill
-rm -rf ~/kit-test
 ```
+
+시운전 폴더는 남겨 둔다. 원래 터미널에서 `printf '%s\n' "$KIT_TEST_DIR"`로 생성된 경로를 확인할 수 있다.
 
 ## 자주 겪는 첫 실행 문제
 

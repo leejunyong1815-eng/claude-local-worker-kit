@@ -1,0 +1,14 @@
+{
+  "purpose": "duration 파서의 빈 입력 처리 구현",
+  "repository": ".",
+  "base_commit": "HEAD",
+  "profile": "",
+  "instructions": "src/durations.py의 parse를 구현한다. 공개 시그니처와 테스트는 바꾸지 않는다. 테스트는 verify에 적힌 캐시 없는 명령으로 실행한다.",
+  "references": ["src/durations.py", "tests/test_durations.py"],
+  "allowed_paths": ["src/durations.py"],
+  "protected_paths": ["tests/", "pyproject.toml", "scripts/verify.sh"],
+  "verify": ["PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_durations.py"],
+  "timeout": 1200,
+  "verify_timeout": 120,
+  "depends_on_uncommitted": false
+}

@@ -9,6 +9,7 @@
 - 미커밋 변경 의존: <true/false; true이면 기준 커밋에 입력을 준비하기 전 실행 금지>
 
 관리 모드에서는 이 지시문을 `task_file`로 넣고 나머지 필드를 JSON 명세에 명시한다.
+JSON의 `verify`에는 아래 실행 명령을 그대로 적는다. 워커도 같은 명령을 사용한다.
 수동 모드에는 자동 격리·상태·검증이 없다. 먼저 독립 작업 공간과 외부 검증 담당자를 정한다.
 
 ## 목적
@@ -26,8 +27,11 @@
 
 ## 실행 명령
 ```
-python3 -m pytest -q tests/test_<모듈>.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_<모듈>.py
 ```
+
+검증 전후 파일이 달라지면 실패하므로 테스트 캐시·bytecode·빌드 산출물을 worktree에 남기지 않는다.
+테스트 자체가 파일을 생성한다면 임시 디렉터리를 사용하도록 기준 커밋에서 준비한다.
 
 ## 수용 기준
 | 기준 | 목표 |

@@ -8,19 +8,31 @@
 ## 등록 → 실행 → 확인
 
 설치/업데이트: 현재 키트에서 `./install.sh` (기존 설정을 유지할 수 있다).
-저장소에서 다음 명세를 작성한다. 예시의 파일·명령은 실제 프로젝트에 맞게 바꾼다.
+대화형 워커나 `claude-duo`를 미리 띄울 필요는 없다. 관리 명령이 기존 `claude-worker`를 새로 실행한다.
+
+코드가 있는 Git 저장소로 이동하고 [명세 예시](../config/task.example.json)를 복사한다.
+예시의 목적·파일·검증 명령을 실제 프로젝트에 맞게 편집한다. `repository: "."`은 등록 명령을 실행하는
+현재 디렉터리를 뜻한다. 명세 파일을 `/tmp`에 두면 태스크 등록용 파일이 원본 저장소의 미추적 파일로 섞이지 않는다.
+
+```bash
+cd ~/my-project
+cp ~/claude-local-worker-kit/config/task.example.json /tmp/worker-task.json
+# /tmp/worker-task.json을 편집한 다음 아래 명령으로 등록한다.
+```
+
+명세의 구조는 다음과 같다.
 
 ```json
 {
   "purpose": "duration 파서의 빈 입력 처리 구현",
-  "repository": "/home/me/project",
+  "repository": ".",
   "base_commit": "HEAD",
-  "profile": "impl",
-  "instructions": "src/durations.py의 parse를 구현한다. 공개 시그니처와 테스트는 바꾸지 않는다.",
+  "profile": "",
+  "instructions": "src/durations.py의 parse를 구현한다. 공개 시그니처와 테스트는 바꾸지 않는다. 테스트는 verify에 적힌 캐시 없는 명령으로 실행한다.",
   "references": ["src/durations.py", "tests/test_durations.py"],
   "allowed_paths": ["src/durations.py"],
   "protected_paths": ["tests/", "pyproject.toml", "scripts/verify.sh"],
-  "verify": ["python3 -m pytest -q -p no:cacheprovider tests/test_durations.py"],
+  "verify": ["PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider tests/test_durations.py"],
   "timeout": 1200,
   "verify_timeout": 120,
   "depends_on_uncommitted": false
@@ -28,13 +40,14 @@
 ```
 
 ```bash
-TASK=$(worker-task submit /tmp/duration-task.json)  # stdout에는 ID 하나만
+TASK=$(worker-task submit /tmp/worker-task.json)  # stdout에는 ID 하나만
 worker-task run "$TASK"                           # 전경 실행; 종료까지 기다림
 worker-task status "$TASK"                        # 상태·이유·시도·프로세스
 worker-task result "$TASK"                        # 검증·변경 파일·로그·diff 경로
 ```
 
 `profile: ""`이면 기본 프로필, `impl`이면 기존 `env.impl`과 `worker.impl.md`를 사용한다.
+`impl`이 없다면 키트 디렉터리에서 `./install.sh --profile impl`로 생성하거나 기본 프로필을 쓴다.
 등록된 프로필을 확인하려면 `worker-task run "$TASK" -P impl`도 가능하다.
 프로필이나 명세를 바꾸려면 새 태스크로 등록한다. `instructions` 대신 또는 추가로 `task_file`을 지정할 수 있다.
 태스크 파일 경로는 JSON 파일 디렉터리 기준이고, **등록 시 내용을 복사**한다.
@@ -44,8 +57,8 @@ worker-task result "$TASK"                        # 검증·변경 파일·로�
 취소·명시적 재시도:
 
 ```bash
-# 다른 터미널에서 실행. 해당 태스크의 현재 시도만 취소 요청한다.
-worker-task cancel "$TASK"
+# 다른 터미널에서는 submit이 출력한 실제 ID를 사용한다.
+worker-task cancel <task ID>
 # 실패·취소·중단을 검토한 뒤 새 worktree에서 재시도한다.
 worker-task run "$TASK" --retry
 ```
@@ -83,6 +96,8 @@ queued → running → verifying → succeeded
 ```
 
 `run`은 성공 0, 실행/검증 실패·취소·중단 1, 잘못된 요청·중복 실행·의존성 차단 2로 종료한다.
+`run`이 0으로 끝난 뒤 `result`의 `state: succeeded`, `verification_valid: true`,
+`artifacts_complete: true`와 모든 검증 종료 코드 0을 확인한다. 이어서 변경 파일과 `diff_path`의 내용을 검토한다.
 `status`와 `result`는 동일한 최신 JSON 기록을 보여 준다. 상태를 읽을 때 살아 있지 않은 실행기를 확인하면
 `interrupted / runner_lost`로 복구한다. Linux의 PID·프로세스 시작 시각·boot ID를 대조하며 PID 재사용을 생존으로 보지 않는다.
 재시작 후 자동 실행/재시도는 없다. 살아 있는 자식 세션이 남으면 재시도를 거절한다. `surviving_processes`를

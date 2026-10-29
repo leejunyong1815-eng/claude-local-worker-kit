@@ -19,6 +19,11 @@ WORKER_NAME=glm-worker COMPUTE_HOST=DRL COMPUTE_DESC="RTX A6000 48GB x2, 503G RA
 ```
 
 (`WORKER_NAME=glm-worker` 는 기존 프로젝트 문서의 `Ask @glm-worker` 를 그대로 쓰기 위한 것이다. 새 프로젝트면 생략한다.)
-서버나 모델을 바꿀 때는 `~/.config/claude-worker/env` 의 `LLM_*` 세 줄만 고치고 `./install.sh --render && llm-probe`.
+서버나 모델을 바꿀 때는 `~/.config/claude-worker/env`의 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`과
+`LLM_CONTEXT_WINDOW`를 확인한 뒤 `./install.sh --render && llm-probe`로 프롬프트 재생성과 연결 확인을 한다.
+`--render`는 컨텍스트 크기를 자동 조회하지 않는다. API 키가 있는 설정 파일 전체를 보고서·대화에 붙여 넣지 않는다.
+
+코드 수정 위임은 [관리 모드](MANAGED_TASKS.md)를 사용할 수 있다. 기존 프로필과 대화형 메시징은 그대로 유지되며,
+관리 태스크는 기록된 기준 커밋에서 새 worktree로 실행한다. 원본의 미커밋 변경은 자동으로 전달되지 않는다.
 
 기존 `~/bin/claude-glm`, `~/bin/drl-*` 는 지우지 않아도 충돌하지 않는다(이름이 다르다).

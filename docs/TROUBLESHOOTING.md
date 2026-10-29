@@ -90,15 +90,35 @@ env 에 `LLM_BASE_URL="http://1.233.219.134:8080"`, `LLM_API_KEY="none"`, `LLM_M
 **파일을 고칠 때마다 "post-edit-check FAILED" 가 뜬다** — 정상 동작이다. 훅이 문법·lint(설정하면 테스트까지)를 돌려 실패를 모델에게 돌려준 것. 모델이 고치면 사라진다.
 `TEST_CMD="auto"` 를 켰는데 테스트가 원래부터 깨져 있으면 먼저 그 테스트를 정리하거나 통과하는 부분 집합으로 좁힌다. 기본은 테스트 끔이다(벤치마크에서 역효과).
 
-**편집이 느리다 / 훅이 매번 오래 돈다** — 테스트 묶음이 크다. `check.conf` 에 `TEST_CMD="python3 -m pytest -x -q tests/unit"` 처럼 빠른 집합을 적거나
-`TEST_ON` 으로 테스트를 돌릴 파일 패턴을 좁힌다. `TEST_TIMEOUT`(기본 120초) 을 넘기면 실패로 치지 않고 `agents/hooks/last-check.log` 에만 남긴다.
+**편집이 느리다 / 훅이 매번 오래 돈다** — 테스트 묶음이 크다. `check.conf`에
+`TEST_CMD="PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -x -q -p no:cacheprovider tests/unit"`처럼 빠른 집합을 적거나
+`TEST_ON`으로 테스트를 돌릴 파일 패턴을 좁힌다. 훅의 `TEST_TIMEOUT`(기본 120초)을 넘기면 훅 자체는 실패로 치지 않는다.
+관리 태스크의 외부 검증은 별도 `verify_timeout`을 사용하며 시간 초과를 실패로 기록한다.
 
 **훅을 끄고 싶다** — 프로젝트의 `.claude/settings.json` 에서 `hooks` 항목을 지운다. 특정 파일 종류만 끄려면 `check.conf` 에 `TEST_CMD=none`, `LINT_PY=none`.
 
 **훅이 전혀 안 돈다** — `agents/hooks/post-edit-check.sh` 에 실행 권한이 있는지(`chmod +x`), 세션을 프로젝트 루트에서 띄웠는지 확인. 훅은 `$CLAUDE_PROJECT_DIR` 기준으로 찾는다.
-기록은 `agents/hooks/last-check.log`.
+수동 모드의 기록은 `agents/hooks/last-check.log`다. 관리 모드에서는 worktree 안에 이 로그를 생성하지 않는다.
+기존 프로젝트의 훅은 `project-init`이 덮어쓰지 않으므로 최신 템플릿과 직접 비교해 갱신한다.
 
-**워커가 테스트 파일을 고쳐 놓고 "통과"라고 보고한다** — 오케스트레이터 검토 절차대로 `git diff --stat -- tests/` 를 본다. 테스트 변경은 반려하고 브랜치를 버린다.
+**워커가 테스트 파일을 고쳐 놓고 "통과"라고 보고한다** — 관리 모드에서는 보호 경로 변경으로 실패한다.
+`worker-task result <ID>`의 변경 파일·검증 결과·diff를 검토한다. 수동 모드는 기준 커밋 대비 변경과 미추적 파일을
+함께 확인하고 외부 검증을 직접 수행한다. 테스트 변경은 반려하되 실패 시도의 작업 공간과 결과는 보존한다.
+
+## 관리 태스크
+
+먼저 `worker-task status <ID>`와 `worker-task result <ID>`로 상태·이유·로그 경로를 확인한다.
+
+| 이유/증상 | 확인할 것 |
+|---|---|
+| `uncommitted_dependency`, 참고 파일 없음 | 필요한 입력이 기준 커밋에 들어 있는지 확인. 사용자가 기준 커밋을 준비한 뒤 새 태스크로 등록 |
+| `path_policy_violation` | `policy_violations`와 변경 파일 확인. 테스트·설정 변경이나 허용 범위 밖 캐시 생성 여부 검토 |
+| `changed_during_verification` | 검증 명령의 캐시·빌드 산출물을 worktree 밖으로 이동. pytest는 `-p no:cacheprovider` 사용 |
+| `worker_timeout` / `verification_timeout` | 어느 단계가 초과했는지 해당 로그 확인. 워커 권한 부족도 확인하고 필요한 경우 예산을 바꾼 명세로 새로 등록 |
+| `interrupted`, 살아 있는 자식 프로세스 | 원인을 검토하고 `worker-task cancel <ID>`로 해당 세션 정리. 명시적 `--retry` 전에는 자동 재실행하지 않음 |
+| `changed_after_verification` | 검증 뒤 worktree 또는 명세가 변경됨. 이전 성공을 재사용하지 말고 변경을 검토 |
+
+전체 명령과 저장 구조는 [관리 모드 사용법](MANAGED_TASKS.md)을 참고한다.
 
 ## 원격 노드
 
