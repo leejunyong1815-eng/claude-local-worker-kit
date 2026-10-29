@@ -199,6 +199,43 @@ Claude 가 테스트를 촘촘히 써 주면(분업 규칙 1) 잡히는 유형. 
 조치: 훅 기본을 **문법·lint 만**(`TEST_CMD=none`)으로 바꾸고, 편집마다 테스트는 `check.conf` 의 `TEST_CMD="auto"` 로 옵트인. ROLE_IMPLEMENTER 와 impl 프롬프트도
 "파일 전체를 먼저 쓰고 테스트를 스스로 돌린다"로 수정. 남는 결론은 4i 와 같다: 놓치는 것은 명세 구석 조항이므로 Claude 가 테스트를 촘촘히 써 주는 분업이 핵심.
 
+## 4k. GB10 모델 교체: `qwen3.8-flash-next` (2026-10-29 저녁, 사용자: "Qwen 3.8 Flash Next 가 GB10 에서 서비스된다")
+
+확인 (게이트웨이 `/v1/models`, `/model/info`):
+- 첫 조회(설정 교체 중이었던 듯)에는 `qwen3.8-flash-next`(+`-oai`)만 보였으나, 사용자 지적("서버는 달라진 게 없어") 후 재조회하니 이전과 같은 구성:
+  이름 4개(`qwen3.8-flash-next`, `qwen3.6-35b-a3b`, 각 `-oai`), **이름마다 배포 2개**(GB10 터널 127.0.0.1:18000 과 같은 호스트 llama.cpp 127.0.0.1:8080),
+  `order` 로 우선 백엔드 지정: `qwen3.8-flash-next` 는 GB10 우선(ctx 262144)·llama.cpp 대체(131072), `qwen3.6-35b-a3b` 는 그 반대.
+  150k 토큰 요청 6회 전부 성공(GB10 으로 감). 광고 `max_input_tokens` 는 이름당 최대값(262144)이라 `qwen3.6-35b-a3b` 프로필은 131072 로 고정해야 한다.
+- 백엔드에 정체를 물으면 "Qwen, Alibaba Tongyi Lab" 이라 답함. 사용자가 중간에 "GLM-5.3-Flash" 라고 적었으나 게이트웨이에는 그 이름이 없다 → 다음 모델 후보로 보고
+  킷은 "새 이름이 목록에 보이면 LLM_MODEL 만 바꾸면 되는" 구조로 정리(설치기가 컨텍스트를 자동으로 읽음). 등록되면 `LAB_DEFAULT_MODEL` 한 줄 교체.
+- `llm-probe`: 패스스루 8/8, `-oai` 도 8/8(3.6 때는 tool_use 실패했던 경로). 구성원 기본은 여전히 패스스루(사고 블록 보존).
+- `claude-worker -P impl -p` Bash 왕복 15초(2턴). 16 동시 요청 전부 성공, 지연 중앙값 12초, 합계 생성 약 130 tok/s.
+- 속도: 생성 약 35 tok/s(3.6 의 90 보다 느림 — 더 큰 모델), 프롬프트 34k 토큰 2.8초(비캐시), 240k 토큰 37초 수용. 프롬프트 캐시 동작(usage 의 cache_read/cache_creation 에 잡히고 input_tokens 는 비캐시분만).
+- 사고: adaptive 요청에 사고 100 토큰 안팎으로 짧고, `disabled` 도 지킨다(3.6/Vega 와 다름). 사고 상한 걱정은 이 모델에서는 불필요.
+
+반영:
+- install.sh: `LAB_DEFAULT_MODEL=qwen3.8-flash-next`, `LAB_DEFAULT_CTX=262144`. `gb10` 프로필 preset 제거(GB10 이 기본이 됨) → 대신 **`vega` 보조 프로필** preset
+  (같은 게이트웨이, `qwen3.6-35b-a3b`, 컨텍스트 131072 고정 — 광고값 262144 를 쓰면 llama.cpp 에서 400). 설치 6b 단계에서 [y/N] 으로 제안.
+  처음에는 :8080 직접 접속 프로필로 만들었다가 사용자 지시("litellm 을 사용하도록")로 게이트웨이 경유로 바꿈. 직접 접속은 TROUBLESHOOTING 의 최후 수단으로만 남김.
+- README(요구 사항·설치 표·실행·모델 나눠 쓰기·속도 표·7절 구조도), 템플릿(ORCHESTRATOR/AGENTS/KICKOFF: gb10 → vega), env.example, MIGRATION,
+  TROUBLESHOOTING(모델 이름·컨텍스트 안내), proxy/(order 기반 이중 배포를 그대로 적은 config 예시, 모델 추가 절차, .env 예시).
+- selftest: vega 프로필 preset 검사 추가 → 112 PASS.
+
+벤치마크 (`bench/run.sh -P impl`, 훅 기본 = 문법·lint, `bench/results/2026-10-29_flash-next.md`): **10/10 PASS**, 숨은 테스트까지 전부 통과.
+
+| 태스크 | qwen3.6-35b-a3b (훅 없음) | qwen3.8-flash-next | 턴 | 시간 |
+|---|---|---|---|---|
+| B1 버그 수정 | FAIL 7/8 | PASS | 7 | 41s |
+| B2~B6 | PASS | PASS | 6~12 | 75~108s |
+| H1 수식 파서 | FAIL 18/20 | PASS | 10 | 209s |
+| H2 스케줄러 | PASS | PASS | 13 | 206s |
+| H3 JSON Patch | PASS (19턴, 821s) | PASS | 16 | 325s |
+| H4 다중 파일 트랜잭션 | PASS (26턴, 310s) | PASS | 17 | 219s |
+
+읽기: 3.6 이 두 번 다 놓친 B1 의 "빈 입력 → ValueError" 와 H1 파서를 3.8 은 한 번에 풀었다. 생성 속도는 3.6(GB10) 의 90 tok/s 보다 느린 35 tok/s 지만
+턴 수가 적어 태스크당 시간은 비슷하거나 짧다. 분업 규칙(Claude 가 스켈레톤·테스트, 워커가 채우기)은 그대로 유효하되, 이 모델에는 "모듈 하나 통째로" 수준의
+태스크를 맡겨도 된다는 근거가 생겼다. 승격 규칙(2회 실패 → Claude 직접)은 유지.
+
 ## 5. 미결 사항 (사용자 확인 필요)
 
 - 새 LLM 서버: 1.233.219.134:8080, llama.cpp `server-vulkan` docker, 모델 `Qwen3.6-35B-A3B-UD-Q4_K_M` (별칭 `qwen3.6-35b-a3b`),
@@ -216,5 +253,6 @@ Claude 가 테스트를 촘촘히 써 주면(분업 규칙 1) 잡히는 유형. 
 - 2026-10-29 서버 패치(사용자): llama.cpp 를 `--kv-unified --flash-attn` 으로 재기동 → 슬롯당 n_ctx 131072. LiteLLM 도 재기동.
   같은 5.5k 요청: :8080 직접 29.3초(llama.cpp prompt_tokens_total +5522), :4000 게이트웨이 1.1초(카운터 +0) → 게이트웨이의
   `qwen3.6-35b-a3b` 는 LLM 서버 llama.cpp 가 아닌 다른 백엔드가 응답 → 4g 에서 GB10(ssh 터널 :18000) 으로 확인. 키트 폴백 기본값 LAB_DEFAULT_CTX=131072 로 통일.
-- GB10 노드: 엔진(llama.cpp CUDA arm64 / SGLang / vLLM), 모델 id, 요청당 컨텍스트 → `proxy/litellm.config.yaml` 의 gb10 항목과 `install.sh` 의 LAB_GB10_* 채움.
+- (해결 2026-10-29 저녁) GB10 노드 모델이 `qwen3.8-flash-next`(ctx 262144) 로 게이트웨이에 등록됨 → 4k. 남은 것: 사용자가 언급한 **GLM-5.3-Flash** 가 등록되면
+  `install.sh` 의 `LAB_DEFAULT_MODEL`/`LAB_DEFAULT_CTX`, README 설치 표·속도 표, env.example 을 그 이름으로 바꾸고 `bench/run.sh -P impl` 로 재측정.
 - 연구실 구성원이 쓰는 원격 계산 노드 규약(계정, 작업 디렉터리). 기본값 `~/claude-work/<project>`.

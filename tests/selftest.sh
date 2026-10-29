@@ -38,7 +38,7 @@ t grep -q 'No remote compute node is configured' "$TMP/conf/worker.md"
 tn grep -q 'remote-run' "$TMP/conf/worker.md"
 tn "$TMP/bin/remote-sync"                                             # COMPUTE_HOST 비어 있음 → 종료 2
 
-echo "4b) 프로필 (env.gb10) 생성·상속·렌더링"
+echo "4b) 프로필 (env.gb10 = 임의 이름의 다른 모델) 생성·상속·렌더링"
 printf 'export LLM_BASE_URL="http://127.0.0.1:9"\nexport LLM_API_KEY=k\nexport LLM_MODEL=m\nexport WORKER_NAME=w1\nexport COMPUTE_HOST="nodeX"\nexport COMPUTE_WORK_DIR="wd"\nexport COMPUTE_DESC="GPU"\n' > "$TMP/conf/env"
 tn env LLM_BASE_URL="http://127.0.0.1:9" PREFIX="$TMP/bin" "$KIT/install.sh" --profile gb10 --non-interactive --skip-probe --prefix "$TMP/bin"   # 모델 없음 → 실패
 t env LLM_MODEL="m27" PREFIX="$TMP/bin" "$KIT/install.sh" --profile gb10 --non-interactive --skip-probe --prefix "$TMP/bin"
@@ -62,6 +62,15 @@ t grep -q 'LLM_API_KEY="k"' "$TMP/conf/env.impl"
 t grep -q 'Implementer discipline' "$TMP/conf/worker.impl.md"
 tn grep -q 'Implementer discipline' "$TMP/conf/worker.md"
 tn grep -q 'WORKER_ROLE="impl"' "$TMP/conf/env.gb10"                   # gb10 에는 역할이 붙지 않음
+echo "4c2) 보조 프로필 vega (같은 게이트웨이, 모델·컨텍스트 preset, 주소·키·원격 노드 상속)"
+t env PREFIX="$TMP/bin" "$KIT/install.sh" --profile vega --non-interactive --skip-probe --prefix "$TMP/bin"
+t grep -q 'LLM_BASE_URL="http://127.0.0.1:9"' "$TMP/conf/env.vega"          # 기본 env 의 주소(게이트웨이) 상속
+t grep -q 'LLM_MODEL="qwen3.6-35b-a3b"' "$TMP/conf/env.vega"
+t grep -q 'LLM_CONTEXT_WINDOW="131072"' "$TMP/conf/env.vega"               # 광고값이 아니라 고정값
+t grep -q 'LLM_API_KEY="k"' "$TMP/conf/env.vega"
+t grep -q 'WORKER_NAME="llm-worker-vega"' "$TMP/conf/env.vega"
+t grep -q 'COMPUTE_HOST="nodeX"' "$TMP/conf/env.vega"
+tn grep -q 'Implementer discipline' "$TMP/conf/worker.vega.md"
 rm -f "$TMP/conf/env.impl" "$TMP/conf/worker.impl.md"
 t env LLM_BASE_URL="http://127.0.0.1:9" LLM_MODEL="m" FORCE_ENV=1 WITH_IMPL=1 PREFIX="$TMP/bin" "$KIT/install.sh" --non-interactive --skip-probe --prefix "$TMP/bin"
 t grep -q 'LLM_MODEL="m"' "$TMP/conf/env.impl"                          # 기본 설치 때 WITH_IMPL=1 → 기본 env 를 물려받은 impl

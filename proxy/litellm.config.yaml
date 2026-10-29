@@ -1,24 +1,51 @@
-# LiteLLM 게이트웨이 설정 — 연구실 LLM 서버(1.233.219.134)에서 실행. 구성원은 :4000 하나만 바라본다.
-#   백엔드 1: 같은 호스트의 llama.cpp (qwen3.6-35b-a3b, 127.0.0.1:8080)
-#   백엔드 2: GB10 노드 (모델이 올라오면 아래 주석을 풀고 .env 의 GB10_* 를 채운다)
+# LiteLLM 게이트웨이 설정 (참고용 — 실제 운영 설정은 LLM 서버에 있다). 구성원은 :4000 하나만 바라본다.
+#   2026-10-29 운영 상태: 모델 이름마다 배포 2개 — GB10 노드(컨테이너 안 ssh -N 터널 127.0.0.1:18000)와 같은 호스트 llama.cpp(127.0.0.1:8080).
+#   `order` 로 우선 백엔드를 정하고(낮은 쪽 우선), 실패·쿨다운 때만 다른 쪽으로 넘어간다. 구성원은 이름만 고른다.
 # 환경변수(.env): PROXY_MASTER_KEY, GB10_BASE_URL, GB10_MODEL, GB10_API_KEY
 model_list:
-  - model_name: qwen3.6-35b-a3b                 # 구성원 env 의 LLM_MODEL
+  - model_name: qwen3.8-flash-next              # 구성원 기본 (키트 install.sh 의 LAB_DEFAULT_MODEL). 새 모델(예: GLM-5.3-Flash)은 같은 꼴로 항목을 추가
     litellm_params:
-      model: anthropic/qwen3.6-35b-a3b          # llama.cpp 의 /v1/messages 로 그대로 전달 (사고 블록·프롬프트 캐시 보존)
-      api_base: http://127.0.0.1:8080           # /v1 없이
-      api_key: none
-      # 백엔드가 Anthropic API 를 지원하지 않으면 위 두 줄 대신:  model: openai/<id>,  api_base: http://…/v1  (사고는 버려지고 본문만 전달됨)
+      model: "anthropic/os.environ/GB10_MODEL"  # GB10 엔진이 아는 모델 id. /v1/messages 로 그대로 전달 (사고 블록·프롬프트 캐시 보존)
+      api_base: "os.environ/GB10_BASE_URL"      # 예: http://127.0.0.1:18000  (/v1 없이)
+      api_key: "os.environ/GB10_API_KEY"
+      order: 1                                  # 우선
     model_info:
-      max_input_tokens: 131072                  # llama.cpp --ctx-size 131072 --kv-unified (요청 하나가 전체를 쓸 수 있음)
+      max_input_tokens: 262144                  # 엔진의 요청당 컨텍스트. 구성원 설치기가 /v1/models 에서 이 값을 읽어 간다
+  - model_name: qwen3.8-flash-next              # 같은 이름의 대체 배포: 같은 호스트 llama.cpp
+    litellm_params:
+      model: anthropic/qwen3.6-35b-a3b
+      api_base: http://127.0.0.1:8080
+      api_key: none
+      order: 2
+    model_info:
+      max_input_tokens: 131072                  # 주의: 262144 짜리 요청이 여기로 대체되면 400. enable_pre_call_checks 로 걸러진다
 
-  # - model_name: gb10                          # ← GB10 모델 이름 (구성원 env 의 LLM_MODEL). install.sh 의 LAB_GB10_MODEL 과 맞춘다
-  #   litellm_params:
-  #     model: "anthropic/os.environ/GB10_MODEL"  # GB10 엔진(llama.cpp/SGLang/vLLM 은 /v1/messages 지원)이 아는 모델 id
-  #     api_base: "os.environ/GB10_BASE_URL"    # 예: http://<gb10-ip>:8000  (/v1 없이. openai/ 로 쓸 때만 /v1 까지)
-  #     api_key: "os.environ/GB10_API_KEY"
-  #   model_info:
-  #     max_input_tokens: 131072                # GB10 엔진의 요청당 컨텍스트와 맞춘다
+  - model_name: qwen3.6-35b-a3b                 # 키트 프로필 vega (llama.cpp 우선, GB10 대체)
+    litellm_params:
+      model: anthropic/qwen3.6-35b-a3b
+      api_base: http://127.0.0.1:8080
+      api_key: none
+      order: 1
+    model_info:
+      max_input_tokens: 131072
+  - model_name: qwen3.6-35b-a3b
+    litellm_params:
+      model: "anthropic/os.environ/GB10_MODEL"
+      api_base: "os.environ/GB10_BASE_URL"
+      api_key: "os.environ/GB10_API_KEY"
+      order: 2
+    model_info:
+      max_input_tokens: 262144
+
+  - model_name: qwen3.8-flash-next-oai          # 같은 백엔드를 OpenAI 형식으로 변환해 넘기는 경로 (사고 블록은 버려짐). 구성원은 쓰지 않는다
+    litellm_params:
+      model: "hosted_vllm/os.environ/GB10_MODEL"
+      api_base: "os.environ/GB10_BASE_URL/v1"
+      api_key: "os.environ/GB10_API_KEY"
+    model_info:
+      max_input_tokens: 262144
+
+
 
 litellm_settings:
   drop_params: true          # 백엔드가 모르는 파라미터(cache_control 등) 제거

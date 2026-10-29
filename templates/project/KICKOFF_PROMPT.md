@@ -1,8 +1,8 @@
 # [붙여넣기용] 오케스트레이터 시작 지시
 
 REPO_PATH = <프로젝트 경로>
-WORKERS = @llm-worker (기본, 실행·수집용)  [@llm-worker-impl (구현 전용, `claude-duo -P impl`)]  [@llm-worker-gb10 (GB10 모델 — 떠 있을 때만)]
-          병렬이면 @llm-worker-1 … (`claude-duo -w N [-P impl,gb10]`)
+WORKERS = @llm-worker (기본, 실행·수집용)  [@llm-worker-impl (구현 전용, `claude-duo -P impl`)]  [@llm-worker-vega (보조 모델, 느림)]
+          병렬이면 @llm-worker-1 … (`claude-duo -w N [-P impl,vega]`)
 CALL_LIMIT = 1   (동시에 보내는 Ask 수 = 떠 있는 워커 수. 워커 하나는 메시지를 순서대로 처리한다)
 
 너는 이 프로젝트의 오케스트레이터다. 먼저 AGENTS.md → agents/ORCHESTRATOR.md → agents/tasks/*.md → README.md 를 읽어라.

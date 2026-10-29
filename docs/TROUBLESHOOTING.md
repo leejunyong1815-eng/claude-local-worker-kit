@@ -47,22 +47,24 @@ llama.cpp 는 `curl host:port/props` 의 `default_generation_settings.n_ctx` 로
 
 **"Autocompact is thrashing: the context refilled to the limit within 3 turns"** — `LLM_CONTEXT_WINDOW` 가 실제보다 **작다**.
 Claude Code 의 첫 요청(시스템 프롬프트+도구 정의)만으로 그 값에 닿아 압축을 반복한다. `llm-probe --models` 가 보여 주는 컨텍스트로 올린다
-(연구실 LiteLLM 의 `qwen3.6-35b-a3b` 는 131072). 바꾼 뒤 `install.sh --render`, 워커 재시작.
+(연구실 LiteLLM 의 `qwen3.8-flash-next` 는 262144, `qwen3.6-35b-a3b` 는 광고값과 달리 131072). 바꾼 뒤 `install.sh --render`, 워커 재시작.
 
 **400 `exceed_context_size_error` ("request (N tokens) exceeds the available context size")** — 요청이 슬롯 컨텍스트를 넘었다.
 `LLM_CONTEXT_WINDOW` 가 서버 값보다 크게 적혀 있는 것이 거의 전부다. 맞춘 뒤 `install.sh --render`, 워커 재시작.
 맞게 적혀 있는데도 난다면 태스크를 더 잘게 나눠 보내고 워커 세션을 자주 새로 시작한다(`/clear`).
 서버 쪽 해결은 관리자가 `--kv-unified` 를 켜거나(슬롯이 컨텍스트 풀을 공유해 한 요청이 전체를 쓸 수 있음) `--parallel` 을 줄이는 것.
 
-**느리다** — LiteLLM(:4000) 경유는 프롬프트 처리 약 5,500 tok/s, 생성 약 90 tok/s 라 Bash 한 번짜리 왕복이 수 초~20초다. 분 단위로 걸리면
+**느리다** — LiteLLM(:4000) 경유(`qwen3.8-flash-next`)는 프롬프트 처리 수천 tok/s, 생성 약 35 tok/s 라 Bash 한 번짜리 왕복이 15초 안팎이다. 분 단위로 걸리면
 env 가 `:8080`(LLM 서버 llama.cpp 직접: 약 200~350 tok/s, 생성 17 tok/s) 을 보고 있거나 게이트웨이 백엔드가 바뀐 것이다. `llm-probe` 로 주소를 확인한다.
 
-**LiteLLM 게이트웨이(:4000)가 응답하지 않는다** — 관리자에게 알리고, 급하면 env 를 `LLM_BASE_URL="http://1.233.219.134:8080"`,
-`LLM_API_KEY="none"` 으로 바꿔 LLM 서버의 llama.cpp 에 직접 붙는다(`install.sh --render` 후 워커 재시작). 느리다(아래 "느리다" 항목의 수치). 다른 백엔드의 모델은 LiteLLM 없이는 못 쓴다.
+**LiteLLM 게이트웨이(:4000)가 응답하지 않는다** — 관리자에게 알린다. 구성원 경로는 게이트웨이 하나뿐이다. 최후 수단으로 LLM 서버의 llama.cpp 에 직접 붙을 수는 있다:
+env 에 `LLM_BASE_URL="http://1.233.219.134:8080"`, `LLM_API_KEY="none"`, `LLM_MODEL="qwen3.6-35b-a3b"`, `LLM_CONTEXT_WINDOW="131072"` 네 줄을 다 바꾸고 `install.sh --render` 후 워커 재시작.
+느리고(생성 17 tok/s) GB10 모델은 못 쓴다. 복구되면 원래대로 되돌린다.
 
 **401 "Authentication Error" / "Invalid proxy server token"** — LiteLLM 키가 틀렸다. 관리자가 준 `sk-…` 를 env `LLM_API_KEY` 에 넣는다.
 
 **400 "Invalid model name passed in" / "model not found"** — LiteLLM 에 그 이름이 등록돼 있지 않다. `llm-probe --models` 로 목록을 보고 `LLM_MODEL` 을 맞춘다.
+2026-10-29 부터 기본 이름은 `qwen3.8-flash-next`(GB10 우선) 이고 `qwen3.6-35b-a3b`(llama.cpp 우선) 도 남아 있다. 옛 설치를 새 기본으로 바꾸려면 `git pull` 후 `FORCE_ENV=1 ./install.sh --non-interactive` 또는 env 의 `LLM_MODEL`·`LLM_CONTEXT_WINDOW` 두 줄을 고친다.
 
 **서버가 127.0.0.1 에만 열려 있다 (docker `-p 127.0.0.1:8080:8080`)** — 외부에서는 연결이 거부된다. 두 가지 중 하나:
 - 서버 관리자가 docker 포트 매핑을 `-p 8080:8080` (0.0.0.0) 으로 바꾼다. 연구실 내부망 전용이면 이쪽이 간단하다.

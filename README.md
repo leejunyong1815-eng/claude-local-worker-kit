@@ -31,7 +31,7 @@ Claude Code 세션 두 개를 짝지어 쓰는 구성이다.
 |---|---|
 | Claude Code | ≥ 2.1.224 (`claude --version`). 설치: `curl -fsSL https://claude.ai/install.sh \| bash` |
 | Claude 계정 | 오케스트레이터용. 터미널에서 `claude` 를 한 번 실행해 로그인해 둔다 |
-| 로컬 LLM 서버 | 연구실 서버 `1.233.219.134` 의 **LiteLLM 게이트웨이(포트 4000)**. 그 뒤에 같은 호스트의 llama.cpp(`qwen3.6-35b-a3b`)와 GB10 노드의 모델이 붙는다. 모델 이름 하나로 어느 백엔드든 고른다. 다른 서버도 Anthropic Messages API(`/v1/messages`)만 제공하면 된다(vLLM·SGLang·llama.cpp·Ollama ≥0.14·LiteLLM) |
+| 로컬 LLM 서버 | 연구실 서버 `1.233.219.134` 의 **LiteLLM 게이트웨이(포트 4000)** 하나만 쓴다. 뒤에 GB10 노드(`qwen3.8-flash-next`, 2026-10-29 부터)와 같은 호스트의 llama.cpp(`qwen3.6-35b-a3b`)가 붙어 있고, 모델 이름이 우선 백엔드를 고르며 다른 쪽이 자동 대체다. 다른 서버도 Anthropic Messages API(`/v1/messages`)만 제공하면 된다(vLLM·SGLang·llama.cpp·Ollama ≥0.14·LiteLLM) |
 | 기타 | python3, curl 필수. tmux(동시 실행), rsync·ssh(원격 노드)는 선택 |
 | OS | Linux, WSL2, macOS. 두 세션은 반드시 **같은 머신, 같은 사용자 계정**에서 띄운다 |
 
@@ -49,8 +49,8 @@ cd ~/claude-local-worker-kit
 |---|---|
 | LLM 서버 주소 | Enter 로 연구실 LiteLLM `http://1.233.219.134:4000`. 다른 서버면 `http://호스트:포트`, **끝에 `/v1` 을 붙이지 않는다** |
 | API 토큰 | Enter (`none`). 2026-10-29 현재 연구실 LiteLLM 은 키 인증이 없다. 나중에 관리자가 키를 걸면 받은 `sk-…` |
-| 모델 id | Enter 로 `qwen3.6-35b-a3b`. 설치기가 LiteLLM 의 모델 목록을 출력한다. 목록의 `qwen3.6-35b-a3b-oai` 는 도구 호출 점검에 실패하므로 고르지 않는다 |
-| 컨텍스트 창 | Enter. 설치기가 LiteLLM 이 알려 주는 값(현재 `qwen3.6-35b-a3b` = 131072)을 기본으로 보여 준다. 서버가 안 알려 주면 131072. 요청 하나가 쓸 수 있는 크기여야 한다 |
+| 모델 id | Enter 로 `qwen3.8-flash-next`. 설치기가 LiteLLM 의 모델 목록을 출력한다. 목록의 `-oai` 변형은 OpenAI 형식으로 변환하는 경로라 사고 블록이 버려진다 → 접미사 없는 이름을 쓴다. 새 모델(예: GLM-5.3-Flash)이 등록되면 목록에 보이는 그 이름을 넣으면 된다 |
+| 컨텍스트 창 | Enter. 설치기가 LiteLLM 이 알려 주는 값(현재 `qwen3.8-flash-next` = 262144)을 기본으로 보여 준다. 요청 하나가 쓸 수 있는 크기여야 한다 |
 | 워커 이름 | Enter 로 `llm-worker` |
 | 원격 노드 ssh 별칭 | `~/.ssh/config` 의 Host 이름. 없으면 Enter |
 
@@ -64,7 +64,8 @@ FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를
 ```
 
 다른 서버를 쓰려면 환경변수로 값을 준다: `LLM_BASE_URL=http://host:port LLM_MODEL=<id> ./install.sh --non-interactive`.
-GB10 모델이 LiteLLM 에 등록된 뒤 그 모델용 워커를 추가하려면 `./install.sh --profile gb10` (아래 4절).
+설치기는 구현 전용 프로필 `impl`(기본 Y)과 보조 모델 프로필 `vega`(기본 N, 게이트웨이의 `qwen3.6-35b-a3b`)를 함께 만들지 묻는다. 나중에 `./install.sh --profile impl|vega` 로도 추가할 수 있고,
+다른 모델용 워커는 `./install.sh --profile <이름>` 으로 목록에서 골라 만든다 (아래 4절).
 
 설치되는 것:
 
@@ -73,8 +74,8 @@ GB10 모델이 LiteLLM 에 등록된 뒤 그 모델용 워커를 추가하려면
 | `~/.local/bin/claude-main`, `claude-worker`, `claude-duo` | 실행기 |
 | `~/.local/bin/llm-probe` | 서버 점검 |
 | `~/.local/bin/remote-{info,sync,run,submit,fetch}` | 원격 노드 실행 (COMPUTE_HOST 설정 시) |
-| `~/.config/claude-worker/env` (, `env.gb10` …) | 워커의 서버·모델·토큰 (권한 0600). 프로필마다 하나 |
-| `~/.config/claude-worker/worker.md` (, `worker.gb10.md` …) | 워커 시스템 프롬프트 (env 에서 자동 생성) |
+| `~/.config/claude-worker/env` (, `env.impl`, `env.vega` …) | 워커의 서버·모델·토큰 (권한 0600). 프로필마다 하나 |
+| `~/.config/claude-worker/worker.md` (, `worker.impl.md` …) | 워커 시스템 프롬프트 (env 에서 자동 생성) |
 
 `~/.local/bin` 이 PATH 에 없다는 경고가 나오면 `~/.bashrc` 에 `export PATH="$HOME/.local/bin:$PATH"` 를 넣고 새 셸을 연다.
 
@@ -84,7 +85,7 @@ GB10 모델이 LiteLLM 에 등록된 뒤 그 모델용 워커를 추가하려면
 cd ~/my-project
 claude-duo               # 오케스트레이터 + 기본 워커
 claude-duo -P impl       # + 구현 전용 워커 @llm-worker-impl (설치 때 만든 프로필)
-claude-duo -P impl,gb10  # + GB10 모델 워커까지 (GB10 프로필을 만들었을 때)
+claude-duo -P impl,vega  # + 보조 모델 워커 @llm-worker-vega (vega 프로필을 만들었을 때, 느림)
 ```
 
 tmux 창이 열린다. 왼쪽이 오케스트레이터, 오른쪽이 워커다. 창 사이 이동은 `Ctrl-b` 다음 화살표,
@@ -161,35 +162,43 @@ project-init ~/my-project     # AGENTS.md, KICKOFF_PROMPT.md, agents/(역할·�
   한 모듈짜리 명확한 명세는 혼자서도 풀고(LRU 캐시는 스켈레톤 없이도 통과), 놓치는 것은 명세의 구석 조항(오류 조건, stderr, 경계)이다.
   그래서 Claude 가 테스트를 촘촘히 써 주는 분업이 효과가 있고, 편집마다 테스트를 들이미는 것은 역효과였다.
 
+  같은 날 저녁 GB10 의 `qwen3.8-flash-next` 로 재측정(훅 기본 = 문법·lint): **10/10 통과**, 숨은 테스트까지 전부. 3.6 이 두 번 놓친 B1 과 H1(파서)도 한 번에 풀었다.
+  태스크당 1~5분, 턴 6~17 (`bench/results/2026-10-29_flash-next.md`). 분업 규칙은 그대로 두되, 이 모델에는 모듈 하나 통째로 맡겨도 된다.
+
 사고(thinking) 조절에 대해: Claude Code 2.1.312 는 모든 요청에 `thinking: adaptive` 를 보내고 `MAX_THINKING_TOKENS` 는 무시한다(0 이면 필드만 빠지고 백엔드는 그래도 사고한다).
 `effort` 값도 백엔드가 무시한다. 사고량을 제한하려면 **서버 쪽**(llama.cpp `--reasoning-budget`, vLLM 의 reasoning 옵션)에서 해야 한다 — 7절 관리자 항목.
 
-### 모델을 나눠 쓰기 (GB10 노드가 붙으면)
+### 모델·경로 나눠 쓰기
 
-LiteLLM 뒤에는 모델이 여러 개 붙을 수 있다. 지금은 LLM 서버 자체의 Qwen3.6-35B-A3B 하나이고, GB10 노드의 큰 모델이
-등록되면 `llm-probe --models` 에 이름이 하나 더 보인다. 그때 워커를 둘로 나눠 띄우고 일의 성격에 따라 보낸다.
+모든 워커는 게이트웨이(:4000)만 바라본다. 게이트웨이에는 모델 이름이 둘 있고, 이름이 **우선 백엔드**를 고른다(다른 쪽은 그 백엔드가 실패할 때의 자동 대체).
 
-| 워커 | 모델 | 특징 | 보낼 일 |
-|---|---|---|---|
-| `@llm-worker` (기본) | `qwen3.6-35b-a3b` (LLM 서버, AMD Vega 2장) | MoE, 활성 3B. 컨텍스트 32k | 테스트 실행, 로그·결과 수집, 실험 돌리기, 파일 정리처럼 **도구 호출이 많고 추론은 가벼운 일** |
-| `@llm-worker-gb10` | GB10 노드 모델 (이름은 등록 후 확정) | 128GB 메모리라 큰 모델·긴 컨텍스트 | 기능 구현, 버그 원인 추적, 리팩터링처럼 **생각이 필요한 일** |
+| 워커 | 모델 이름 | 우선 백엔드 | 특징 | 보낼 일 |
+|---|---|---|---|---|
+| `@llm-worker` (기본) | `qwen3.8-flash-next` | GB10 노드 | 컨텍스트 262144, 프롬프트 캐시 됨, 16 동시 요청 OK | 테스트 실행, 결과 수집, 실험, 파일 정리 |
+| `@llm-worker-impl` | 같은 이름, 구현 규칙 프롬프트 | GB10 노드 | | 스켈레톤 채우기, 테스트 통과시키기 |
+| `@llm-worker-vega` (선택) | `qwen3.6-35b-a3b` | LLM 서버 llama.cpp (AMD Vega 2장) | 컨텍스트 131072, 생성 17 tok/s 로 느림 | 기본 워커가 바쁠 때 가벼운 수집 작업 보조 |
 
 ```bash
-~/claude-local-worker-kit/install.sh --profile gb10   # 모델 목록에서 GB10 모델을 고르고 컨텍스트 창을 넣는다
-claude-duo -P gb10                                     # 기본 워커 + GB10 워커
+~/claude-local-worker-kit/install.sh --profile vega    # 보조 프로필 (설치 때 안 만들었으면)
+~/claude-local-worker-kit/install.sh --profile glm     # 새 모델이 게이트웨이에 등록되면: 목록에서 이름을 고르고 컨텍스트는 자동
+claude-duo -P impl,vega                                # 기본 + 구현 전용 + 보조 워커
 ```
 
-둘 다 `Ask @이름 to …` 로 똑같이 부른다. `templates/project/agents/ORCHESTRATOR.md` 에 이 배분 규칙이 들어 있어
-오케스트레이터가 알아서 고른다. GB10 워커가 없으면 모든 일이 기본 워커로 간다.
+`-oai` 접미사 이름은 같은 백엔드를 OpenAI 형식으로 변환해 넘기는 경로다(사고 블록이 버려짐). 구성원은 쓰지 않는다.
+
+모두 `Ask @이름 to …` 로 똑같이 부른다. `templates/project/agents/ORCHESTRATOR.md` 에 배분 규칙이 들어 있어 오케스트레이터가 고른다.
 
 ### 속도와 컨텍스트 (실측)
 
 | 경로 | 프롬프트 처리 | 토큰 생성 | 요청당 컨텍스트 | Bash 한 번짜리 워커 왕복 |
 |---|---|---|---|---|
-| LiteLLM `:4000` 의 `qwen3.6-35b-a3b` (2026-10-29) | 약 5,500 tok/s | 약 90 tok/s | 131072 | 수 초 ~ 20초 |
-| LLM 서버 llama.cpp `:8080` 직접 (AMD Vega 2장, 우회용) | 약 200~350 tok/s | 약 17 tok/s | 131072 (`--kv-unified`, 동시 요청이 나눠 씀) | 약 3분 |
+| LiteLLM `:4000` 의 `qwen3.8-flash-next` (GB10, 2026-10-29) | 약 6,000~12,000 tok/s (34k 토큰 2.8초, 240k 토큰 37초) | 약 35 tok/s (16 동시 요청 합계 약 130 tok/s) | 262144 | 약 15초 |
+| (참고, 이전) LiteLLM 의 `qwen3.6-35b-a3b` (GB10) | 약 5,500 tok/s | 약 90 tok/s | 131072 | 수 초 ~ 20초 |
+| LiteLLM `:4000` 의 `qwen3.6-35b-a3b` (`vega` 프로필, LLM 서버 llama.cpp 우선) | 약 200~350 tok/s | 약 17 tok/s | 131072 | 약 3분 |
 
-게이트웨이 뒤에 백엔드가 여럿이면 요청마다 다른 쪽으로 갈 수 있어 **같은 작업도 어떤 턴은 빠르고 어떤 턴은 느릴 수 있다**. 고장이 아니다.
+새 모델은 사고를 짧게 하고(간단한 질문에 사고 100 토큰 안팎) `thinking: disabled` 도 지키며, 긴 입력을 캐시해 두 번째 요청부터 빠르다.
+우선 백엔드가 실패하면 게이트웨이가 다른 쪽으로 넘기므로 **같은 작업도 어떤 턴은 느릴 수 있다**. 고장이 아니다. 단, 기본 워커의 요청이 131072 토큰을 넘은 상태에서
+대체 백엔드(llama.cpp)로 넘어가면 400 이 난다 — 긴 작업은 `/clear` 로 자주 새로 시작한다.
 `LLM_CONTEXT_WINDOW` 는 **실제 백엔드의 요청당 컨텍스트**와 같아야 한다. 작으면 Claude Code 가 쓸데없이 자동 압축을 반복하고
 ("Autocompact is thrashing"), 크면 서버가 400 을 낸다. 설치기가 LiteLLM 의 값을 읽어 넣어 준다.
 워커에게는 여전히 **작은 태스크를 하나씩** 보내고, 긴 작업은 워커 창에서 `/clear` 로 새로 시작하는 편이 낫다.
@@ -209,7 +218,7 @@ claude-duo -P gb10                                     # 기본 워커 + GB10 �
 
 ```bash
 claude-duo -w 3          # 기본 워커 3개: llm-worker-1, llm-worker-2, llm-worker-3
-claude-duo -w 2 -P gb10  # 기본 워커 2개 + GB10 워커 1개
+claude-duo -w 2 -P impl  # 기본 워커 2개 + 구현 전용 워커 1개
 ```
 
 오케스트레이터에서 `Ask @llm-worker-1 to …`, `Ask @llm-worker-2 to …` 로 나눠 보낸다.
@@ -253,18 +262,19 @@ llm-probe                                         # 재점검 (프로필은 llm-
 ```
 
 설정 키 설명은 `config/worker.env.example` 에 있다. 서버를 바꿀 때는 `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`
-세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>` (`impl` = 같은 모델의 구현 전용 워커, `gb10` = GB10 모델).
+세 줄만 고치면 된다. 프로필을 더 만들려면 `./install.sh --profile <이름>` (`impl` = 같은 모델의 구현 전용 워커, `vega` = LLM 서버 llama.cpp 직접, 그 외 이름 = 다른 모델을 목록에서 고름).
 
 ## 7. 서버 쪽 구성 (관리자용)
 
 ```
 구성원 PC: claude-main (Claude) ⇄ claude-worker ──HTTP──▶ LLM 서버 1.233.219.134
-                                                      LiteLLM :4000 ─┬─▶ llama.cpp :8080 (qwen3.6-35b-a3b, 같은 호스트)
-                                                                     └─▶ GB10 노드 (큰 모델, 올라오면 등록)
+                                                      LiteLLM :4000 ─┬─▶ (ssh 터널 :18000) GB10 노드 1.233.218.218   ← qwen3.8-flash-next 우선
+                                                                     └─▶ llama.cpp 127.0.0.1:8080 (같은 호스트, Vega)  ← qwen3.6-35b-a3b 우선
+                                                      (각 이름은 다른 쪽을 자동 대체로 가진다)
 ```
 
 LiteLLM 설정·실행 방법은 [proxy/README.md](proxy/README.md). 모델을 추가·교체할 때 구성원은 `LLM_MODEL` 만 바꾸면 된다.
-LiteLLM 이 죽었을 때는 env 를 `LLM_BASE_URL=http://1.233.219.134:8080`, `LLM_API_KEY=none` 으로 바꾸면 LLM 서버의 llama.cpp 에 직접 붙는다(느리다).
+LiteLLM 이 죽었을 때는 관리자에게 알린다. 최후 수단(직접 접속)은 docs/TROUBLESHOOTING.md 에 있다.
 
 **사고 토큰 상한(관리자)** — 실측(2026-10-29): 클라이언트의 `effort` 는 백엔드가 무시하고, `thinking.budget_tokens` 는 지키지만 Claude Code 가 그 필드를 보내지 않으며,
 LiteLLM `litellm_params` 에 `thinking` 을 넣어도 요청 값(adaptive)이 이긴다. 따라서 과도한 사고를 줄이려면 엔진에서 제한한다:

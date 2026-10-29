@@ -4,9 +4,9 @@
 | 역할 | 세션 | 프롬프트 | 책임 |
 |---|---|---|---|
 | Orchestrator | `claude-main` (Claude) | agents/ORCHESTRATOR.md | 목표·게이트 관리, 태스크 분해, **스켈레톤·테스트 작성**, 결과 검토(diff·테스트 직접 확인), 문서 갱신 |
-| Implementer | `@llm-worker-impl` (`claude-duo -P impl`, 없으면 `@llm-worker`) 또는 `@llm-worker-gb10` (GB10 모델, 있을 때) | agents/ROLE_IMPLEMENTER.md | 스켈레톤 채우기, 테스트 통과시키기, 작은 버그 수정 |
-| Runner | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_RUNNER.md | 계산 노드에서 실험 실행, 로그·결과 저장 |
-| Analyst | `@llm-worker` (Qwen3.6-35B-A3B) | agents/ROLE_ANALYST.md | 결과 집계, 그림 생성, 판정 초안 |
+| Implementer | `@llm-worker-impl` (`claude-duo -P impl`, 없으면 `@llm-worker`) | agents/ROLE_IMPLEMENTER.md | 스켈레톤 채우기, 테스트 통과시키기, 작은 버그 수정 |
+| Runner | `@llm-worker` (게이트웨이 모델) 또는 `@llm-worker-vega` (보조, 느림) | agents/ROLE_RUNNER.md | 계산 노드에서 실험 실행, 로그·결과 저장 |
+| Analyst | `@llm-worker` (게이트웨이 모델) | agents/ROLE_ANALYST.md | 결과 집계, 그림 생성, 판정 초안 |
 
 ## 작업 단위
 - 태스크는 `agents/tasks/*.md` 하나씩. 목적·읽을 파일·절차·산출물·수용 기준·반증 체크를 적는다. 구현 태스크는 `agents/tasks/T_impl_template.md` 양식.

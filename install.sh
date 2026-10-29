@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # install.sh — Claude 오케스트레이터 + 로컬 LLM 워커 키트 설치
 # 사용: ./install.sh [--prefix DIR] [--non-interactive] [--skip-probe]
-#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   워커 프로필 추가 (env.NAME). impl = 같은 모델의 구현 전용 워커, gb10 = GB10 모델
+#       ./install.sh --profile NAME [--non-interactive] [--skip-probe]   워커 프로필 추가 (env.NAME). impl = 같은 모델의 구현 전용 워커,
+#                                                                        vega = 게이트웨이의 qwen3.6-35b-a3b(LLM 서버 자체 GPU 우선), 그 외 이름 = 다른 모델(목록에서 고름)
 #       ./install.sh --render                                            설정 변경 후 워커 프롬프트만 재생성 (모든 프로필)
 #   --prefix DIR        실행 파일 설치 위치 (기본 ~/.local/bin)
 #   --non-interactive   질문 없이 환경변수로 설정: LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_CONTEXT_WINDOW
@@ -15,15 +16,19 @@ INTERACTIVE=1; PROBE=1; RENDER_ONLY=0; PROFILE=""
 MIN_CLAUDE="2.1.224"   # 크로스 세션 메시징 최소 버전
 
 # 연구실 기본값 — 서버가 바뀌면 여기만 고친다.
-# 접속점은 LLM 서버의 LiteLLM 게이트웨이. 그 뒤에 같은 호스트의 llama.cpp(qwen3.6-35b-a3b)와 GB10 노드가 붙는다 (proxy/ 참고).
+# 접속점은 LLM 서버의 LiteLLM 게이트웨이 하나다. 모델 이름이 우선 백엔드를 고르고, 다른 쪽이 자동 대체(fallback)다 (proxy/ 참고):
+#   qwen3.8-flash-next : GB10 노드 우선 (ctx 262144), LLM 서버 llama.cpp 대체
+#   qwen3.6-35b-a3b    : LLM 서버 llama.cpp(AMD Vega 2장, 느림) 우선 (ctx 131072), GB10 대체   → 프로필 vega
+# 다음 모델(예: GLM-5.3-Flash)이 게이트웨이에 등록되면 LAB_DEFAULT_MODEL 만 바꾼다. 컨텍스트는 /v1/models 에서 자동으로 읽는다.
 LAB_HOST="http://1.233.219.134"
-LAB_DEFAULT_PORT=4000                 # LiteLLM. (LiteLLM 이 죽었을 때 임시 우회: 8080 = llama.cpp 직접)
-LAB_DEFAULT_MODEL="qwen3.6-35b-a3b"   # LiteLLM model_name = llama.cpp 별칭
+LAB_DEFAULT_PORT=4000                 # LiteLLM 게이트웨이. 구성원은 이 포트만 쓴다
+LAB_DEFAULT_MODEL="qwen3.8-flash-next" # LiteLLM model_name (GB10 노드). "-oai" 접미사 변형도 있지만 패스스루인 이 이름을 쓴다
 # 컨텍스트는 "요청 하나가 쓸 수 있는 크기"다. 설치기는 먼저 서버 /v1/models 의 max_input_tokens(LiteLLM 이 알려 줌)를 쓰고,
-# 없을 때만 아래 값을 쓴다. 아래 값 = LLM 서버 llama.cpp 직접 접속 때의 크기 (--ctx-size 131072 --kv-unified, 2026-10-29 패치 후).
-LAB_DEFAULT_CTX=131072
-# GB10 노드 모델이 LiteLLM 에 등록되면 채운다 → 프로필 gb10 의 기본값. 비어 있으면 설치기가 서버 모델 목록을 보여 주고 묻는다.
-LAB_GB10_MODEL="";  LAB_GB10_CTX=""
+# 없을 때만 아래 값을 쓴다. 아래 값 = 게이트웨이가 2026-10-29 에 알려 준 qwen3.8-flash-next 의 max_input_tokens.
+LAB_DEFAULT_CTX=262144
+# 보조 모델: 같은 게이트웨이의 qwen3.6-35b-a3b (LLM 서버 자체 GPU 우선, 느림). 프로필 vega 의 기본값.
+# 게이트웨이는 이 이름에도 262144 를 광고하지만 우선 백엔드(llama.cpp)의 요청당 컨텍스트는 131072 라 값을 고정한다.
+LAB_VEGA_MODEL="qwen3.6-35b-a3b"; LAB_VEGA_CTX=131072
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -113,8 +118,8 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
             read -r -p "    모델 id${d_model:+ [$d_model]}: " model; model="${model:-$d_model}"
             [ -n "$model" ] && break; echo "    모델 id 는 비울 수 없습니다. 위 목록에서 고르세요."
         done
-        det="$(detect_ctx "$url" "$key" "$model")"
-        [ -n "$det" ] && { d_ctx="$det"; echo "    (서버가 알려 준 이 모델의 컨텍스트: $det 토큰)"; }
+        if [ -n "$ctx" ]; then d_ctx="$ctx"; echo "    (이 프로필의 컨텍스트는 $ctx 로 고정 — 우선 백엔드의 실제 크기)"
+        else det="$(detect_ctx "$url" "$key" "$model")"; [ -n "$det" ] && { d_ctx="$det"; echo "    (서버가 알려 준 이 모델의 컨텍스트: $det 토큰)"; }; fi
         read -r -p "    모델 컨텍스트 창 토큰 수 [$d_ctx]: " ctx; ctx="${ctx:-$d_ctx}"
         read -r -p "    워커 세션 이름 [$d_name]: " name; name="${name:-$d_name}"
         if [ -z "$inherit" ]; then
@@ -127,7 +132,7 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
     else
         url="${url:-$d_url}"; key="${key:-$d_key}"; model="${model:-$d_model}"; name="${name:-$d_name}"
         [ -n "$ctx" ] || ctx="$(detect_ctx "${url%/v1}" "$key" "$model")"; ctx="${ctx:-$d_ctx}"
-        [ -n "$model" ] || die "LLM_MODEL 이 필요합니다 (이 프로필의 기본 모델이 아직 정해지지 않음). 예: LLM_MODEL=gb10 ./install.sh --profile gb10 --non-interactive"
+        [ -n "$model" ] || die "LLM_MODEL 이 필요합니다 (이 프로필의 기본 모델이 정해져 있지 않음). 예: LLM_MODEL=glm-5.3-flash ./install.sh --profile glm --non-interactive"
     fi
     url="${url%/}"; url="${url%/v1}"
     cat > "$file" <<ENV
@@ -184,7 +189,7 @@ if [ -n "$PROFILE" ]; then
     [ -f "$CONF_DIR/env" ] || warn "기본 설정($CONF_DIR/env)이 없습니다. 먼저 ./install.sh 를 돌리는 것이 보통입니다."
     D_URL="$LAB_HOST:$LAB_DEFAULT_PORT"; D_MODEL=""; D_CTX="$LAB_DEFAULT_CTX"; D_ROLE=""   # 같은 LiteLLM, 모델은 다른 것
     if [ "$PROFILE" = "impl" ]; then D_MODEL="$LAB_DEFAULT_MODEL"; D_ROLE="impl"; fi          # 구현 전용: 같은 모델, 구현 규칙이 든 프롬프트
-    if [ "$PROFILE" = "gb10" ] && [ -n "$LAB_GB10_MODEL" ]; then D_MODEL="$LAB_GB10_MODEL"; D_CTX="${LAB_GB10_CTX:-$LAB_DEFAULT_CTX}"; fi
+    if [ "$PROFILE" = "vega" ]; then D_MODEL="$LAB_VEGA_MODEL"; D_CTX="$LAB_VEGA_CTX"; export LLM_CONTEXT_WINDOW="${LLM_CONTEXT_WINDOW:-$LAB_VEGA_CTX}"; fi   # 보조 모델, 컨텍스트 고정
     D_NAME="llm-worker-$PROFILE"; INHERIT="$CONF_DIR/env"
 else
     ENV_FILE="$CONF_DIR/env"
@@ -232,19 +237,19 @@ if [ -z "$PROFILE" ] && [ ! -f "$CONF_DIR/env.impl" ]; then
     else echo "    (impl 프로필은 나중에 ./install.sh --profile impl 로 추가)"; fi
 fi
 
-# ── 6b. 다른 모델(GB10) 안내 (기본 설치 때만) ─────────────────────────────
-if [ -z "$PROFILE" ] && [ -n "$LAB_GB10_MODEL" ] && [ ! -f "$CONF_DIR/env.gb10" ]; then
+# ── 6b. 보조 모델 프로필 vega (기본 설치 때만) ───────────────────────────
+if [ -z "$PROFILE" ] && [ ! -f "$CONF_DIR/env.vega" ]; then
     if [ $INTERACTIVE -eq 1 ]; then
-        read -r -p "    GB10 노드 모델($LAB_GB10_MODEL) 워커 프로필 'gb10' 도 만들까요? [Y/n] " a
-        if [[ ! "$a" =~ ^[Nn]$ ]]; then
-            unset LLM_BASE_URL LLM_API_KEY LLM_MODEL LLM_CONTEXT_WINDOW WORKER_NAME
-            say "워커 프로필 'gb10' → $CONF_DIR/env.gb10"
-            write_env "$CONF_DIR/env.gb10" "$LAB_HOST:$LAB_DEFAULT_PORT" "$LAB_GB10_MODEL" "${LAB_GB10_CTX:-$LAB_DEFAULT_CTX}" "llm-worker-gb10" "$CONF_DIR/env"
-            render_prompt "$CONF_DIR/env.gb10" "$CONF_DIR/worker.gb10.md"
-            [ $PROBE -eq 1 ] && { CLAUDE_WORKER_CONF_DIR="$CONF_DIR" "$PREFIX/llm-probe" -P gb10 || warn "gb10 모델 점검 실패 (아직 등록 전이면 정상)"; }
+        read -r -p "    보조 모델 프로필 'vega' (게이트웨이의 $LAB_VEGA_MODEL — LLM 서버 자체 GPU 우선, 느림. 기본 워커가 바쁠 때 보조용)도 만들까요? [y/N] " a
+        if [[ "$a" =~ ^[Yy]$ ]]; then
+            say "워커 프로필 'vega' → $CONF_DIR/env.vega"
+            ( source "$ENV_FILE"; INTERACTIVE=0; D_ROLE=""; WORKER_ROLE=""; WORKER_NAME="llm-worker-vega"; LLM_MODEL="$LAB_VEGA_MODEL"; LLM_CONTEXT_WINDOW="$LAB_VEGA_CTX"
+              write_env "$CONF_DIR/env.vega" "$LLM_BASE_URL" "$LAB_VEGA_MODEL" "$LAB_VEGA_CTX" "llm-worker-vega" "$ENV_FILE" )
+            render_prompt "$CONF_DIR/env.vega" "$CONF_DIR/worker.vega.md"
+            [ $PROBE -eq 1 ] && { CLAUDE_WORKER_CONF_DIR="$CONF_DIR" "$PREFIX/llm-probe" -P vega || warn "vega 점검 실패"; }
         fi
     else
-        echo "    (GB10 프로필은 ./install.sh --profile gb10 --non-interactive 로 추가)"
+        echo "    (보조 모델 vega 프로필은 ./install.sh --profile vega --non-interactive 로 추가)"
     fi
 fi
 
@@ -255,7 +260,8 @@ cat <<MSG
 다음 단계:
   1) 프로젝트 디렉터리로 이동
   2) claude-duo                 # tmux: 오케스트레이터(왼쪽) + 기본 워커(오른쪽)
-     claude-duo -P impl         # 기본 워커 + 구현 전용 워커 (프로필을 만들었을 때; GB10 모델도 있으면 -P impl,gb10)
+     claude-duo -P impl         # 기본 워커 + 구현 전용 워커 (프로필을 만들었을 때)
+     claude-duo -P impl,vega    # + 보조 모델 워커 (vega 프로필을 만들었을 때; 느림)
      또는 터미널마다  claude-main  /  claude-worker  /  claude-worker -P impl
      project-init ~/my-project  # 프로젝트에 규칙 파일·자동 검사 훅 넣기
   3) 오케스트레이터 대화에서:  Ask @${WN} to <태스크 한 개의 완결된 지시>
