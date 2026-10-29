@@ -41,14 +41,15 @@ cp ~/claude-local-worker-kit/config/task.example.json /tmp/worker-task.json
 
 ```bash
 TASK=$(worker-task submit /tmp/worker-task.json)  # stdout에는 ID 하나만
-worker-task run "$TASK"                           # 전경 실행; 종료까지 기다림
-worker-task status "$TASK"                        # 상태·이유·시도·프로세스
-worker-task result "$TASK"                        # 검증·변경 파일·로그·diff 경로
+worker-task run "$TASK"                         # 전경 실행; 종료까지 기다림
+worker-task status "$TASK"                      # 상태·이유·시도·프로세스
+worker-task result "$TASK"                      # 검증·변경 파일·로그·diff 경로
 ```
 
 `profile: ""`이면 기본 프로필, `impl`이면 기존 `env.impl`과 `worker.impl.md`를 사용한다.
 `impl`이 없다면 키트 디렉터리에서 `./install.sh --profile impl`로 생성하거나 기본 프로필을 쓴다.
-등록된 프로필을 확인하려면 `worker-task run "$TASK" -P impl`도 가능하다.
+`profile: "impl"`로 등록했다면 `worker-task run "$TASK" -P impl`로 프로필 일치를 확인하며 실행할 수도 있다.
+`-P`는 등록된 프로필을 바꾸는 옵션이 아니며, 다른 이름을 주면 실행을 거절한다.
 프로필이나 명세를 바꾸려면 새 태스크로 등록한다. `instructions` 대신 또는 추가로 `task_file`을 지정할 수 있다.
 태스크 파일 경로는 JSON 파일 디렉터리 기준이고, **등록 시 내용을 복사**한다.
 `repository`는 등록 명령의 현재 디렉터리 기준이다. `references`는 기준 커밋 안의 상대 경로/패턴이다.
@@ -57,12 +58,12 @@ worker-task result "$TASK"                        # 검증·변경 파일·로�
 취소·명시적 재시도:
 
 ```bash
-# 다른 터미널에서는 submit이 출력한 실제 ID를 사용한다.
-worker-task cancel <task ID>
-# 실패·취소·중단을 검토한 뒤 새 worktree에서 재시도한다.
-worker-task run "$TASK" --retry
+# 다른 터미널에서 submit이 출력한 실제 ID를 입력한다.
+read -r -p '취소할 task ID: ' TASK
+worker-task cancel "$TASK"
 ```
 
+실패·취소·중단 결과를 검토한 뒤 `worker-task run "$TASK" --retry`로 재시도한다.
 재시도는 같은 기준 커밋과 명세를 쓰며, 이전 시도의 수정은 가져오지 않는다. 이전 시도·로그·worktree는 남는다.
 독립 태스크는 별도 터미널 또는 셸의 `&`로 동시에 실행할 수 있다. 중복 `run`은 잠금으로 거절된다.
 관리 모드는 권한 우회·`acceptEdits`·도구 허용 목록을 자동 추가하지 않는다. 기존 Claude 권한을 유지하므로,
