@@ -6,35 +6,24 @@ Claude가 작업을 지휘하고, 로컬 LLM 워커가 구현·실행을 맡는 
 - **워커** (`claude-worker`): 같은 Claude Code 프로그램이지만 연구실 **로컬 LLM 서버**에 연결된다.
   코드 수정, 테스트, 실험 실행 같은 손이 많이 가는 일을 맡는다. Claude 토큰을 쓰지 않는다.
 
-대화형 모드에서는 둘이 같은 머신·같은 사용자에서 Unix 소켓으로 직접 대화한다. 오케스트레이터 창에
-`Ask @llm-worker to ...` 라고 쓰면 워커에게 전달되고, 워커가 일을 마치면 보고가 오케스트레이터 창에 돌아온다.
+사용자는 구현할 기능과 완료 조건을 오케스트레이터에게 말한다. 오케스트레이터가 작업을 나누고,
+필요한 워커를 선택·실행한 뒤 결과를 검토한다. 독립적인 태스크에는 여러 워커를 동시에 사용할 수 있다.
 
-```
- ┌──────────────────────┐   Ask @llm-worker to …   ┌──────────────────────┐
- │ claude-main          │ ───────────────────────▶ │ claude-worker        │
- │ (Claude, Anthropic)  │ ◀─────────────────────── │ (Claude Code UI,     │
- │ 계획·검토·결정        │        보고               │  로컬 LLM 서버 모델)  │
- └──────────────────────┘                          └──────────┬───────────┘
-                                                               │ remote-run / remote-submit
-                                                               ▼
-                                                   ┌──────────────────────┐
-                                                   │ 원격 계산 노드 (ssh)  │
-                                                   │ GPU 실험, 긴 작업     │
-                                                   └──────────────────────┘
+```text
+사용자: 기능과 완료 조건
+          ↓
+오케스트레이터: 설계 → 태스크 분해 → 워커 실행 → 검증 결과·diff 검토
+                                  ├─ 워커 A / worktree A
+                                  └─ 워커 B / worktree B
 ```
 
-할 일에 따라 실행 방식을 고른다.
+코드 수정은 태스크별 worktree와 외부 검증을 제공하는 관리 모드로 위임한다.
+기존 대화형 세션 간 메시징도 조회·실행 작업에 사용할 수 있다. 워커 호출 방식과 상태 조회는 오케스트레이터가 담당한다.
 
-| 할 일 | 실행 방식 | 작업 공간과 완료 판정 |
-|---|---|---|
-| 질문, 조사, 테스트 실행·결과 확인 | `claude-duo` + `Ask @llm-worker to …` | 수동 메시징. 같은 디렉터리에서 코드 편집을 겹치지 않게 하고, 메인이 결과를 검토한다 |
-| 코드 수정 위임 | `worker-task` 관리 CLI | 태스크·시도별 worktree에서 별도 워커를 실행하고, 경로 검사와 외부 검증으로 성공을 판정한다 |
+처음이면 [작은 기능 하나 구현해 보기](docs/FIRST_RUN.md)를 따른다.
+명령을 직접 조작하거나 실패 원인을 조사할 때는 [관리 CLI 사용법](docs/MANAGED_TASKS.md)을 참고한다.
 
-처음이면 [대화형 연결 시운전](docs/FIRST_RUN.md)을 진행한다. 코드 수정을 맡기려면 아래
-[관리 모드 빠른 시작](#관리-모드로-코드-수정-맡기기)과 [상세 사용법](docs/MANAGED_TASKS.md)을 따른다.
-관리 모드는 이미 떠 있는 대화형 워커에 메시지를 보내는 방식과 별개다.
-
-빠른 이동: [설치](#2-설치) · [관리 태스크](#관리-모드로-코드-수정-맡기기) · [수동 메시징](#수동-메시징으로-조회실행-맡기기) · [설정 변경](#6-설정-변경) · [검사·문제 해결](#8-문제-해결제거)
+빠른 이동: [설치](#2-설치) · [프로젝트 시작](#3-프로젝트-시작) · [기능 요청](#4-기능-요청하기) · [설정 변경](#6-설정-변경) · [검사·문제 해결](#8-문제-해결제거)
 
 ## 1. 요구 사항
 
@@ -95,91 +84,49 @@ FAIL 이 있으면 [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) 의 표를
 
 `~/.local/bin` 이 PATH 에 없다는 경고가 나오면 `~/.bashrc` 에 `export PATH="$HOME/.local/bin:$PATH"` 를 넣고 새 셸을 연다.
 
-## 3. 대화형 세션 실행
+## 3. 프로젝트 시작
 
-질문·조사·실행 결과 확인에 쓰는 수동 모드다. 코드 수정 위임은 4절의 관리 모드를 권장한다.
-
-```bash
-cd ~/my-project
-claude-duo               # 오케스트레이터 + 기본 워커
-claude-duo -P impl       # + 구현 전용 워커 @llm-worker-impl (설치 때 만든 프로필)
-claude-duo -P impl,vega  # + 보조 모델 워커 @llm-worker-vega (vega 프로필을 만들었을 때, 느림)
-```
-
-tmux 창이 열린다. 왼쪽이 오케스트레이터, 오른쪽이 워커다. 창 사이 이동은 `Ctrl-b` 다음 화살표,
-떼어 두기는 `Ctrl-b d`, 다시 붙기는 `claude-duo`, 끝내기는 `claude-duo --kill`.
-
-tmux 없이 쓰려면 터미널마다 `claude-main`, `claude-worker`(, `claude-worker -P impl`)를 띄운다.
-같은 프로젝트 디렉터리는 조회·실행 용도로 공유할 수 있다. 코드 편집까지 수동 위임한다면 메인이 먼저 별도 worktree를
-준비하고 그 경로에서 워커를 시작한다. 메인과 워커가 상대의 작업 공간을 편집하지 않게 한다.
-
-처음 여는 프로젝트 디렉터리면 두 세션 모두 "이 폴더를 신뢰하느냐"고 묻는다. 둘 다 예.
-
-워커 창 상단에 로컬 모델 이름이 보이면 정상이다. "Model … isn't recognized · context assumed to be 200k" 는
-경고일 뿐이며, 실제 컨텍스트 창을 설정에 적어 주면 사라진다(아래 6절).
-
-## 4. 일 시키기
-
-### 관리 모드로 코드 수정 맡기기
-
-설치 후 코드가 들어 있는 Git 저장소로 이동한다. [명세 예시](config/task.example.json)를 복사해
-실제 파일·지시·검증 명령에 맞게 편집한 뒤 등록한다.
+설치 후 작업할 Git 저장소에서 프로젝트 규칙을 준비하고 오케스트레이터를 시작한다.
 
 ```bash
 cd ~/my-project
-cp ~/claude-local-worker-kit/config/task.example.json /tmp/worker-task.json
-# /tmp/worker-task.json을 편집한다. repository의 "."은 등록 명령의 현재 디렉터리다.
-TASK=$(worker-task submit /tmp/worker-task.json)
-worker-task run "$TASK"       # 전경 실행. 기존 프로필로 새 워커 프로세스를 시작한다.
-worker-task status "$TASK"
-worker-task result "$TASK"    # 검증 종료 코드, 변경 파일, 로그·diff 경로 확인
+project-init .
+claude-main
 ```
 
-다른 터미널에서 `worker-task cancel <task ID>`로 해당 실행을 취소할 수 있다.
-재시도는 결과를 검토한 뒤 `worker-task run "$TASK" --retry`로 명시한다. 이전 시도와 worktree는 보존된다.
-`claude-duo`나 대화형 워커를 미리 띄울 필요는 없으며, `profile`에는 설치된 프로필 이름을 적는다
-(`""`은 기본 프로필, `"impl"`은 구현 전용 프로필).
+`project-init`은 `AGENTS.md`, `KICKOFF_PROMPT.md`, `agents/`의 역할·태스크 양식·검사 훅,
+`.claude/settings.json`을 추가한다. 기존 파일은 덮어쓰지 않으므로 이미 초기화한 프로젝트는 템플릿과 차이를 확인해 갱신한다.
 
-**기준 커밋에 포함된 코드만 전달된다.** 원본의 staged·unstaged·미추적 변경은 포함되지 않는다.
-방금 작성한 스켈레톤·테스트에 의존한다면 `depends_on_uncommitted: true`로 실행을 차단하고,
-필요한 입력의 기준 커밋을 사용자가 준비한 뒤 새로 등록한다. 워커의 완료 보고나 종료 코드 0만으로 성공 처리하지 않는다.
-최종 검증 결과와 diff를 메인이 검토하고 반영 방법을 결정한다.
+처음 대화에서는 `KICKOFF_PROMPT.md`를 읽고 따르도록 요청하면서 구현할 기능을 말한다.
+`claude-main`은 실행기이며 운영 규칙을 자동 주입하지 않는다. 규칙을 읽은 Claude가 작업 분해·위임·검토를 수행한다.
+관리 모드는 필요한 워커 프로세스를 새로 시작하므로 대화형 워커를 미리 띄울 필요가 없다.
+기존 `claude-duo` 실행법은 [대화형 메시징 운영](docs/INTERACTIVE.md)에 있다.
 
-검증 명령은 캐시·빌드 산출물을 worktree에 남기지 않도록 작성한다. 관리 모드는 ignored 파일도 검사한다.
-worktree는 편집 충돌을 줄이는 장치이며 보안 샌드박스는 아니다. 권한 설정, 보호 경로, 복구·로그 보존은
-[관리 모드 상세 문서](docs/MANAGED_TASKS.md)에 설명한다.
+## 4. 기능 요청하기
 
-### 수동 메시징으로 조회·실행 맡기기
+예를 들어 오케스트레이터에게 다음처럼 말한다.
 
-대화형 오케스트레이터 창에서 다음처럼 요청한다. 실패한 코드를 수정하는 일은 별도의 관리 태스크로 등록한다.
-
-```
-Ask @llm-worker to: In /home/me/my-project run
-`PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -q -p no:cacheprovider`.
-Leave source files and Git state unchanged. Report the command, exit code and failing tests for a separate implementation task.
+```text
+KICKOFF_PROMPT.md를 읽고 운영 규칙을 따라 줘.
+입력 문자열의 앞뒤 공백을 없애고, 연속된 공백·탭·줄바꿈을 공백 하나로 합치는
+normalize_spaces 함수를 구현해 줘. 빈 입력과 공백뿐인 입력은 빈 문자열이어야 해.
+워커 위임, 외부 테스트 검증, 변경 검토까지 진행하고 결과와 남은 문제를 알려 줘.
 ```
 
-워커 창에 메시지가 도착해 작업이 시작되고, 끝나면 보고가 오케스트레이터 창에 나타난다.
-그 사이 오케스트레이터에게 다른 말을 걸어도 된다.
+사용자는 목적·동작·완료 조건을 설명하면 된다. 태스크 명세 작성, 워커 선택과 호출, 상태·결과 확인은
+오케스트레이터가 담당한다. 서로 독립적인 태스크는 서버 처리량에 맞춰 여러 워커에 분배한다.
+동시 실행 수를 자동 조절하는 스케줄러는 없으므로 실행 개수도 오케스트레이터가 판단한다.
 
-규칙은 하나다. **한 번의 Ask = 완결된 태스크 하나.** 워커는 오케스트레이터와 나눈 대화를 전혀 모른다.
-그래서 지시 안에 다음을 전부 넣는다.
+**기준 커밋에 포함된 코드만 워커에게 전달된다.** 방금 작성한 스켈레톤·테스트나 프로젝트 규칙에 의존한다면
+기준 커밋을 먼저 준비해야 한다. 기존 사용자 변경을 자동으로 stash·commit하지 않으며, 필요한 입력을 포함할 수 없으면
+그 태스크를 멈추고 이유를 설명한다. 새 예제 저장소에서 기준 커밋 생성까지 맡기는 흐름은 [첫 구현 안내](docs/FIRST_RUN.md)에 있다.
 
-- 프로젝트 경로, 읽을 역할 파일·태스크 파일
-- 실행할 명령과 설정값
-- 시간·규모 예산
-- 수용 기준(어떤 숫자가 나와야 통과인지)
-- 보고 양식
+완료 보고에는 task/attempt ID, 검증 종료 코드, 변경 파일, 로그·diff·worktree 경로가 포함되어야 한다.
+워커의 완료 보고나 종료 코드 0만으로 성공 처리하지 않는다. 오케스트레이터가 외부 검증 결과와 diff를 검토하고
+반영 방법을 제안한다. 최종 merge·commit·push는 사용자가 요청한 범위에서만 진행한다.
 
-"알아서 해 줘" 식 지시는 로컬 모델이 엉뚱한 곳을 헤매게 한다.
-오케스트레이터에게 이 규칙을 지키게 하려면 프로젝트에 규칙 파일을 넣는다 (기존 파일은 덮어쓰지 않는다).
-
-```bash
-project-init ~/my-project     # AGENTS.md, KICKOFF_PROMPT.md, agents/(역할·태스크 양식·검사 훅), .claude/settings.json
-```
-
-`AGENTS.md` 와 `agents/ROLE_*.md` 를 프로젝트에 맞게 고친 뒤, `KICKOFF_PROMPT.md` 내용을 오케스트레이터 창에
-붙여 넣으면 오케스트레이터가 규칙을 읽고 태스크를 배정하기 시작한다.
+worktree는 편집 충돌을 줄이는 장치이며 보안 샌드박스는 아니다.
+권한 설정, 보호 경로, 복구·로그 보존과 수동 CLI 예시는 [관리 모드 상세 문서](docs/MANAGED_TASKS.md)에 있다.
 
 ### 구현 태스크 준비와 검토
 
@@ -234,12 +181,12 @@ project-init ~/my-project     # AGENTS.md, KICKOFF_PROMPT.md, agents/(역할·�
 ```bash
 ~/claude-local-worker-kit/install.sh --profile vega    # 보조 프로필 (설치 때 안 만들었으면)
 ~/claude-local-worker-kit/install.sh --profile glm     # 새 모델이 게이트웨이에 등록되면: 목록에서 이름을 고르고 컨텍스트는 자동
-claude-duo -P impl,vega                                # 기본 + 구현 전용 + 보조 워커
 ```
 
 `-oai` 접미사 이름은 같은 백엔드를 OpenAI 형식으로 변환해 넘기는 경로다(사고 블록이 버려짐). 구성원은 쓰지 않는다.
 
-모두 `Ask @이름 to …` 로 똑같이 부른다. `templates/project/agents/ORCHESTRATOR.md` 에 배분 규칙이 들어 있어 오케스트레이터가 고른다.
+오케스트레이터가 설치된 프로필과 작업 성격에 맞춰 워커를 선택한다.
+대화형 세션을 직접 관리할 때의 이름·실행 옵션은 [대화형 메시징 운영](docs/INTERACTIVE.md)을 참고한다.
 
 ### 속도와 컨텍스트 (2026-10-29 실측)
 
@@ -256,42 +203,17 @@ claude-duo -P impl,vega                                # 기본 + 구현 전용 
 ("Autocompact is thrashing"), 크면 서버가 400 을 낸다. 설치기가 LiteLLM 의 값을 읽어 넣어 준다.
 워커에게는 여전히 **작은 태스크를 하나씩** 보내고, 긴 작업은 워커 창에서 `/clear` 로 새로 시작하는 편이 낫다.
 
-### 워커가 멈춰 있을 때
+### 여러 워커와 진행 상황
 
-워커 창을 본다. 대개 Bash 명령 실행 허가를 묻고 있다. 매번 허락하기 귀찮으면
+오케스트레이터는 독립적인 태스크를 각각의 worktree에서 동시에 실행할 수 있다.
+같은 태스크의 중복 실행은 잠금으로 거절되며, 태스크별 결과와 실패한 시도는 보존된다.
+사용자는 “진행 상황과 막힌 이유를 알려 줘” 또는 “이 태스크만 취소해 줘”처럼 오케스트레이터에게 요청하면 된다.
 
-- 워커 창에서 `/permissions` 로 자주 쓰는 명령을 허용하거나,
-- 워커를 `claude-worker --permission-mode acceptEdits` 로 띄우거나(파일 편집은 자동 허용, 명령은 질문),
-- 프로젝트의 `.claude/settings.local.json` 에 allow 규칙을 둔다. 예:
-  `{"permissions":{"allow":["Bash(python3 *)","Bash(pytest *)","Bash(remote-* *)"]}}`
+워커가 멈췄다면 오케스트레이터가 해당 실행의 상태·로그를 확인한다. 권한 설정이 필요한 경우에는 이유와
+필요한 권한을 사용자에게 설명한다. 관리 모드는 권한 우회 옵션을 자동 추가하지 않는다.
+동시 처리량은 게이트웨이와 실제 백엔드 설정에 따라 달라진다. 위 속도 표는 측정 당시 결과다.
 
-### 병렬로 돌리기
-
-관리 모드는 각기 다른 task ID를 별도 터미널에서 `worker-task run <ID>`으로 실행한다.
-태스크마다 worktree·결과가 나뉘며, 같은 태스크의 중복 실행은 거절된다.
-
-수동 메시징에서는 워커 세션 하나가 받은 메시지를 **순서대로** 처리한다. 조회·실행 요청 세 개를 동시에
-처리하려면 대화형 워커도 세 개 띄운다.
-
-```bash
-claude-duo -w 3          # 기본 워커 3개: llm-worker-1, llm-worker-2, llm-worker-3
-claude-duo -w 2 -P impl  # 기본 워커 2개 + 구현 전용 워커 1개
-```
-
-오케스트레이터에서 `Ask @llm-worker-1 to …`, `Ask @llm-worker-2 to …` 로 나눠 보낸다.
-수동으로 띄우려면 터미널마다 `CLAUDE_WORKER_NAME=llm-worker-2 claude-worker`.
-동시 처리량은 게이트웨이와 실제 백엔드 설정에 따라 달라진다. 위 속도 표의 수치는 측정 당시 결과이며 처리량 보장은 아니다.
-오케스트레이터에서 `/peers` 를 치면 지금 연결 가능한 워커 목록이 보인다.
-
-### 세션 이어 가기
-
-```bash
-claude-main -r orchestrator      # 어제 오케스트레이터 대화 이어 가기
-claude-worker -r llm-worker      # 워커도 마찬가지
-```
-
-워커는 오래 쓰면 로컬 모델의 컨텍스트가 차서 느려지거나 실패한다. 태스크 몇 개마다 워커 창에서 `/clear`
-하거나 새로 띄우는 편이 낫다. 어차피 워커는 대화 맥락에 의존하지 않도록 지시를 보낸다.
+대화형 워커 여러 개 띄우기, 메시징·권한 확인, 세션 재개는 [대화형 메시징 운영](docs/INTERACTIVE.md)을 참고한다.
 
 ## 5. 원격 계산 노드
 
@@ -369,7 +291,8 @@ templates/project/             프로젝트용 AGENTS.md, 역할 파일, 구현 
 bench/                         워커 단독 구현 벤치마크 (tasks/, run.sh, results/)
 tests/selftest.sh              오프라인 자체 검사
 tests/test_worker_task.py      모의 Claude + 임시 Git worktree 통합 검사
-docs/FIRST_RUN.md              첫 실행 시운전
+docs/FIRST_RUN.md              오케스트레이터와 작은 기능 하나 구현하기
+docs/INTERACTIVE.md            대화형 워커·수동 메시징·연결 진단
 docs/MANAGED_TASKS.md          관리 태스크 등록·실행·검증·복구와 제한
 docs/TROUBLESHOOTING.md        증상별 해결
 docs/MIGRATION.md              기존 개인 구성(claude-glm / drl-*)에서 옮기기

@@ -12,6 +12,7 @@
 - 태스크는 `agents/tasks/*.md` 하나씩. 목적·읽을 파일·절차·산출물·수용 기준·반증 체크를 적는다. 구현 태스크는 `agents/tasks/T_impl_template.md` 양식.
 - 구현 위임은 `worker-task submit/run/status/result/cancel` 관리 모드를 권장한다. 실행기가 기준 커밋에서 별도 worktree를 준비한다. 워커는 그 안에서만 작업하고 checkout·add·commit하지 않는다.
 - 미커밋 스켈레톤·테스트는 worktree에 포함되지 않는다. 의존한다면 `depends_on_uncommitted: true`로 차단하고, 사용자가 필요한 입력의 기준 커밋을 준비한 뒤 새로 등록한다.
+- 사용자가 기준 커밋 생성을 명시적으로 허용했다면 오케스트레이터가 승인된 파일만 경로를 명시해 커밋할 수 있다. 관련 없는 사용자 변경은 포함하지 않는다.
 - 수동 메시징은 자동 격리·상태·검증을 제공하지 않는다. 코드 편집 전 오케스트레이터가 독립 작업 공간을 준비하고 외부 검증을 수행한다. 서로의 작업 공간을 편집하지 않는다.
 - 수동 실험 결과는 `results/<exp>_<tag>/`에 데이터 + `REPORT.md`(HANDOFF_TEMPLATE 형식).
 - 관리 구현 태스크는 실행기가 worktree 밖에 결과·로그·diff를 저장한다. 워커는 지정된 허용 경로만 수정하고 보고는 응답으로 전달한다. `worker-task result <ID>`로 최종 기록을 확인한다.
