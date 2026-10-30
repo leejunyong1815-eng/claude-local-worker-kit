@@ -18,6 +18,9 @@ if '--version' in sys.argv:
     print('2.1.312 (mock)'); sys.exit(0)
 assert '--dangerously-skip-permissions' not in sys.argv
 assert '--permission-mode' not in sys.argv
+assert not os.environ.get('CLAUDECODE')
+assert not os.environ.get('CLAUDE_CODE_SESSION_ID')
+assert not os.environ.get('CLAUDE_CODE_CHILD_SESSION')
 assert os.environ['ANTHROPIC_MODEL'] == 'mock-model'
 prompt = sys.argv[sys.argv.index('-p') + 1]
 args = json.loads(prompt.rsplit('\n\n', 1)[1])
@@ -346,7 +349,7 @@ class ManagedTasks(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertEqual(p.returncode, 2)
         self.assertFalse((self.repo / "forbidden").exists())
-        for values in ({"timeout": 0}, {"allowed_paths": ["../escape"]},
+        for values in ({"timeout": 0}, {"allowed_paths": ["../escape"]}, {"compute_backend": "ssh"},
                        {"verify": []}, {"instructions": "offline-secret-12345"}):
             with self.subTest(values=values):
                 spec = json.loads((self.root / "spec.json").read_text())
@@ -354,6 +357,15 @@ class ManagedTasks(unittest.TestCase):
                 path = self.root / "invalid.json"
                 path.write_text(json.dumps(spec))
                 self.assertEqual(self.call("submit", path, check=False).returncode, 2)
+
+    def test_local_backend_and_independent_session_identity(self):
+        self.env.update(CLAUDECODE="1", CLAUDE_CODE_SESSION_ID="parent-session",
+                        CLAUDE_CODE_CHILD_SESSION="parent-child")
+        task = self.submit()
+        registered = json.loads((self.store / task / "spec.json").read_text())
+        self.assertEqual(registered["compute_backend"], "local")
+        state = self.run_task(task)
+        self.assertEqual(state["compute_backend"], "local")
 
 
 if __name__ == "__main__":

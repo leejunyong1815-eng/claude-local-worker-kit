@@ -123,7 +123,7 @@ write_env() { # write_env <env파일> <기본URL> <기본모델> <기본ctx> <�
         read -r -p "    모델 컨텍스트 창 토큰 수 [$d_ctx]: " ctx; ctx="${ctx:-$d_ctx}"
         read -r -p "    워커 세션 이름 [$d_name]: " name; name="${name:-$d_name}"
         if [ -z "$inherit" ]; then
-            read -r -p "    원격 계산 노드 ssh 별칭 (없으면 비움): " chost
+            read -r -p "    원격 계산 노드 ssh 별칭 (기본: 로컬 컴퓨터/WSL, 원격을 쓸 때만 입력): " chost
             if [ -n "$chost" ]; then
                 read -r -p "    원격 작업 디렉터리 [claude-work]: " cdir
                 read -r -p "    노드 설명 한 줄 (예: A6000 48GB x2) []: " cdesc

@@ -1,0 +1,6 @@
+{
+  "compute_backend": "local",
+  "grid_sides": [4, 6],
+  "shots": [256, 1024, 4096],
+  "seeds": [17, 29, 43]
+}

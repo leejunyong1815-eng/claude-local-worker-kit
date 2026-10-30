@@ -3,6 +3,7 @@
   "repository": ".",
   "base_commit": "HEAD",
   "profile": "",
+  "compute_backend": "local",
   "instructions": "src/durations.py의 parse를 구현한다. 공개 시그니처와 테스트는 바꾸지 않는다. 테스트는 verify에 적힌 캐시 없는 명령으로 실행한다.",
   "references": ["src/durations.py", "tests/test_durations.py"],
   "allowed_paths": ["src/durations.py"],

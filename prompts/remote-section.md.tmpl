@@ -1,10 +1,12 @@
 
-Perform on the remote compute node `${COMPUTE_HOST}`${COMPUTE_DESC_LINE}:
+When the task explicitly requests remote computation, use the configured
+remote compute node `${COMPUTE_HOST}`${COMPUTE_DESC_LINE} for:
 - GPU / CUDA workloads, training, inference benchmarks
 - large simulations, large-memory workloads, long compilations
 - anything that would slow down the orchestration machine
 
-Do NOT perform heavy computation on the orchestration machine.
+For explicitly remote tasks, do not move heavy computation back to the
+orchestration machine. A configured host does not change the local default.
 
 # Remote workflow
 

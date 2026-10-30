@@ -32,6 +32,7 @@ cp ~/claude-local-worker-kit/config/task.example.json /tmp/worker-task.json
   "repository": ".",
   "base_commit": "HEAD",
   "profile": "",
+  "compute_backend": "local",
   "instructions": "src/durations.py의 parse를 구현한다. 공개 시그니처와 테스트는 바꾸지 않는다. 테스트는 verify에 적힌 캐시 없는 명령으로 실행한다.",
   "references": ["src/durations.py", "tests/test_durations.py"],
   "allowed_paths": ["src/durations.py"],
@@ -108,6 +109,9 @@ queued → running → verifying → succeeded
 재시작 후 자동 실행/재시도는 없다. 살아 있는 자식 세션이 남으면 재시도를 거절한다. `surviving_processes`를
 확인하고 `cancel`로 해당 세션을 종료한 후 명시적으로 재시도한다. 정상 SIGINT/SIGTERM도 자식을 정리하고 `interrupted`로 남긴다.
 현재 관리 모드는 **Linux(/proc, WSL2 포함)** 전용이다. 기존 수동 실행 모드의 지원 범위는 유지된다.
+계산 backend는 기본 `local`(현재 컴퓨터/WSL)이다. `compute_backend`를 생략해도 같으며, 관리 모드는 현재 다른 backend를 거절한다.
+LLM 서버는 추론 접속점일 뿐 계산 노드가 아니다. 새 워커 프로세스에는 부모 Claude의 세션 ID 표지만 전달하지 않으며,
+기존 프로필·권한 설정은 유지한다.
 
 기본 저장 위치는 `${XDG_STATE_HOME:-~/.local/state}/claude-worker/tasks`다.
 `WORKER_TASK_HOME` 또는 모든 명령 앞의 `--state-dir /별도/경로`로 바꿀 수 있다. **원본 체크아웃 안의 저장 위치는 거절**한다.

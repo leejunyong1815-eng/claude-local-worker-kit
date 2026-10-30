@@ -279,9 +279,13 @@ class Tasks:
         depends = raw.get("depends_on_uncommitted", False)
         if not isinstance(depends, bool):
             raise ValueError("depends_on_uncommitted must be boolean")
+        backend = raw.get("compute_backend", "local")
+        if backend != "local":
+            raise ValueError("managed tasks currently support only compute_backend=local (current computer/WSL)")
         spec = dict(purpose=purpose, instructions=instructions, repository=str(repo), base_commit=base,
                     profile=profile, references=refs, allowed_paths=allowed, protected_paths=protected,
-                    verify=verify, timeout=limits[0], verify_timeout=limits[1], depends_on_uncommitted=depends)
+                    verify=verify, timeout=limits[0], verify_timeout=limits[1], depends_on_uncommitted=depends,
+                    compute_backend=backend)
         serialized = json.dumps(spec)
         if redact(serialized, secrets_for(profile)) != serialized:
             raise ValueError("task specification contains a configured API key; remove it")
@@ -350,6 +354,7 @@ class Tasks:
             state = dict(task_id=task, attempt_id=attempt, current_attempt=attempt,
                          attempts=old["attempts"] + [attempt], state="running", reason=None,
                          base_commit=spec["base_commit"], profile=spec["profile"], worktree=str(wt),
+                         compute_backend=spec.get("compute_backend", "local"),
                          worker_name=f"task-{task[-12:]}-{attempt}",
                          original_dirty_at_submit=old["original_dirty_at_submit"],
                          original_dirty_at_run=dirty(spec["repository"]), uncommitted_changes_included=False,
@@ -391,6 +396,10 @@ class Tasks:
             env["CLAUDE_WORKER_PROFILE"] = spec["profile"]
             env["CLAUDE_WORKER_NAME"] = state["worker_name"]
             env["WORKER_TASK_MANAGED"] = "1"
+            # This is a separate CLI session in its own worktree, not the parent
+            # Claude session. Keep permissions/config; drop only session identity.
+            for name in ("CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_CHILD_SESSION"):
+                env.pop(name, None)
             process = subprocess.Popen(command, cwd=wt, env=env, start_new_session=True,
                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             who = identity(process.pid)
@@ -468,6 +477,8 @@ class Tasks:
             if missing:
                 raise ValueError("reference absent from base commit (possibly uncommitted): " + ", ".join(missing))
             prompt = (f"Managed task {task}, attempt {attempt}. Purpose: {spec['purpose']}\n"
+                      "Compute backend: local (this computer, often WSL). Run the assigned implementation and tests locally. "
+                      "The LLM inference server is not the compute backend. Do not use SSH or remote-* for this task.\n"
                       f"Your assigned worktree is {wt}, detached at {spec['base_commit']}. "
                       "Stay in this worktree. Do not checkout, add, commit, merge or remove worktrees. "
                       "Leave edits for external verification. Your report is not the success decision.\n"
