@@ -104,7 +104,9 @@ def setup_path(conf, prefix):
             '    export PATH="$(IFS=:; printf \'%s\' "${_LLM_NEW_PATH[*]}")"\n'
             'done\n'
             'unset _LLM_WORKER_BIN _LLM_CLAUDE_BIN _LLM_PATH_ENTRY _LLM_OLD_PATH _LLM_NEW_PATH _LLM_COMPONENT\n'
-            f"export LLM_WORKER_CONF_DIR={shlex.quote(str(conf))}\n")
+            f"export LLM_WORKER_CONF_DIR={shlex.quote(str(conf))}\n"
+            '# Codex profile chosen by codex-bootstrap; codex-main passes it as -p (empty or absent file: no profile).\n'
+            f"[ ! -s {shlex.quote(str(conf / 'codex-profile'))} ] || export LLM_CODEX_PROFILE=\"$(cat {shlex.quote(str(conf / 'codex-profile'))})\"\n")
     if script.exists() and script.read_text() != text:
         backup = Path(tempfile.mkdtemp(prefix="path-backup.", dir=conf))
         shutil.copy2(script, backup / script.name)

@@ -31,5 +31,9 @@ if os.environ.get('LLM_POOL_DIR'):
             managed += ['-c', 'shell_environment_policy.set.' + key + '=' + json.dumps(os.environ[key])]
 # Options after -- are prompt text, so insert launcher configuration before it.
 cut = forward.index('--') if '--' in forward else len(forward)
+# Optional Codex profile ($CODEX_HOME/<name>.config.toml) when the caller passes none.
+profile = os.environ.get('LLM_CODEX_PROFILE')
+if profile and not any(arg in ('-p', '--profile') or arg.startswith('--profile=') for arg in forward[:cut]):
+    managed = ['-p', profile, *managed]
 args = ['codex', *forward[:cut], *managed, *forward[cut:]]
 os.execvp(args[0], args)

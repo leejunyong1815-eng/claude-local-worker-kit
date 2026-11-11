@@ -1,0 +1,619 @@
+#!/usr/bin/env python3
+"""Codex main + OpenCodex (Anthropic API key) bootstrap: detect, apply idempotently, verify.
+
+Secrets are never read, printed or passed on argv. Root steps run only with --sudo; otherwise
+the exact commands are printed. --check changes nothing. Model calls happen only with --probe.
+"""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+from _kit_env import configure
+configure()
+
+PINNED_OPENCODEX = '2.99.0'
+OPENCODEX_REPO = 'lidge-jun/opencodex'
+PROVIDER = 'anthropic-apikey'
+SERVICE = 'opencodex-proxy.service'
+PROXY_URL = os.environ.get('CODEX_BOOTSTRAP_PROXY_URL', 'http://127.0.0.1:10100')  # override only for offline tests
+CODEX_INSTALL_URL = 'https://chatgpt.com/codex/install.sh'
+KEY_VARS = ('ANTHROPIC_API_KEY_PRIMARY', 'ANTHROPIC_API_KEY_SECONDARY')
+HOME = Path.home()
+CODEX_HOME = Path(os.environ.get('CODEX_HOME') or HOME / '.codex')
+KEYS_FILE = HOME / '.config/opencodex/keys.env'
+OCX_ROOT = HOME / '.local/opt/opencodex'
+LOCAL_BIN = HOME / '.local/bin'
+DROPIN = HOME / '.config/systemd/user' / (SERVICE + '.d') / 'override.conf'
+ARCH = {'x86_64': 'x64', 'amd64': 'x64', 'aarch64': 'arm64', 'arm64': 'arm64'}
+
+report = []
+
+
+def note(step, status, detail=''):
+    report.append((step, status, detail))
+    print('[' + status + '] ' + step + (': ' + detail if detail else ''), flush=True)
+
+
+def run(cmd, timeout=120, env=None, stdin=subprocess.DEVNULL, check=False):
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env, stdin=stdin)
+    if check and result.returncode != 0:
+        raise RuntimeError(shlex.join(cmd) + ' failed: ' + (result.stderr or result.stdout).strip()[:400])
+    return result
+
+
+def version_of(cmd):
+    path = shutil.which(cmd)
+    if not path:
+        return None, None
+    try:
+        out = run([cmd, '--version'], timeout=30).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        out = ''
+    match = re.search(r'\d+\.\d+\.\d+', out)
+    return path, match.group(0) if match else out
+
+
+def os_release():
+    data = {}
+    try:
+        for line in Path('/etc/os-release').read_text().splitlines():
+            if '=' in line:
+                key, value = line.split('=', 1)
+                data[key] = value.strip().strip('"')
+    except OSError:
+        pass
+    return data
+
+
+def read_first(path):
+    try:
+        return Path(path).read_text().strip()
+    except OSError:
+        return None
+
+
+def detect():
+    rel = os_release()
+    info = {
+        'distro': rel.get('ID', 'unknown'), 'version': rel.get('VERSION_ID', ''),
+        'arch': platform.machine(), 'wsl': 'microsoft' in (read_first('/proc/version') or '').lower(),
+        'systemd_user': shutil.which('systemctl') is not None and run(['systemctl', '--user', 'show-environment'], timeout=20).returncode == 0,
+        'userns_restricted': read_first('/proc/sys/kernel/apparmor_restrict_unprivileged_userns'),
+        'bwrap': shutil.which('bwrap'),
+    }
+    info['codex_path'], info['codex_version'] = version_of('codex')
+    info['ocx_path'], info['ocx_version'] = version_of('ocx')
+    info['codex_login'] = (CODEX_HOME / 'auth.json').is_file()
+    info['sandbox_ok'] = False
+    if info['bwrap']:
+        try:
+            info['sandbox_ok'] = run([info['bwrap'], '--unshare-user', '--ro-bind', '/', '/', '/bin/true'], timeout=20).returncode == 0
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    info['linger'] = run(['loginctl', 'show-user', os.environ.get('USER', ''), '-p', 'Linger', '--value'], timeout=20).stdout.strip() if shutil.which('loginctl') else None
+    info['service_installed'] = info['systemd_user'] and run(['systemctl', '--user', 'cat', SERVICE], timeout=20).returncode == 0
+    info['proxy_up'] = proxy_healthy()
+    return info
+
+
+def proxy_healthy(timeout=3):
+    try:
+        with urllib.request.urlopen(PROXY_URL + '/healthz', timeout=timeout) as response:
+            return json.loads(response.read().decode()).get('status') == 'ok'
+    except Exception:
+        return False
+
+
+def wait_proxy(seconds=40):
+    for _ in range(seconds):
+        if proxy_healthy():
+            return True
+        time.sleep(1)
+    return False
+
+
+def print_detect(info):
+    rows = [('OS', info['distro'] + ' ' + info['version'] + (' (WSL)' if info['wsl'] else '')), ('arch', info['arch']),
+            ('systemd --user', 'yes' if info['systemd_user'] else 'no'),
+            ('codex', (info['codex_version'] or 'missing') + (' @ ' + info['codex_path'] if info['codex_path'] else '')),
+            ('codex login', 'yes' if info['codex_login'] else 'no'),
+            ('ocx', (info['ocx_version'] or 'missing') + (' @ ' + info['ocx_path'] if info['ocx_path'] else '')),
+            ('proxy', 'up' if info['proxy_up'] else 'down'), ('service', 'installed' if info['service_installed'] else 'absent'),
+            ('bwrap sandbox', 'ok' if info['sandbox_ok'] else 'blocked' + (' (userns restricted)' if info['userns_restricted'] == '1' else '')),
+            ('linger', info['linger'] or 'unknown')]
+    width = max(len(r[0]) for r in rows)
+    for key, value in rows:
+        print('  ' + key.ljust(width) + '  ' + value)
+
+
+# ---------------------------------------------------------------- steps
+
+def step_codex(args, info):
+    if info['codex_path']:
+        note('codex', 'ok', info['codex_version'])
+    else:
+        if args.codex_global:
+            cmd = 'sudo env CODEX_INSTALL_DIR=/usr/local/bin CODEX_HOME=/opt/codex sh -c "$(curl -fsSL ' + CODEX_INSTALL_URL + ')"'
+        else:
+            cmd = 'curl -fsSL ' + CODEX_INSTALL_URL + ' | sh'
+        if args.check or (args.codex_global and not args.sudo):
+            note('codex', 'todo', 'install: ' + cmd)
+            return
+        with tempfile.TemporaryDirectory(prefix='codex-install.') as tmp:
+            script = Path(tmp) / 'install.sh'
+            urllib.request.urlretrieve(CODEX_INSTALL_URL, script)
+            if args.codex_global:
+                run(['sudo', 'env', 'CODEX_INSTALL_DIR=/usr/local/bin', 'CODEX_HOME=/opt/codex', 'sh', str(script)], timeout=900, check=True, stdin=None)
+            else:
+                run(['sh', str(script)], timeout=900, check=True, stdin=None)
+        info['codex_path'], info['codex_version'] = version_of('codex')
+        note('codex', 'changed', 'installed ' + str(info['codex_version']))
+    if not info['codex_login']:
+        note('codex login', 'todo', 'run `codex` once as your own user (not sudo) and sign in; auth lands in ' + str(CODEX_HOME / 'auth.json'))
+
+
+MODEL_CHOICES = (('claude-fable-5-2', 'Fable 5.2'), ('claude-opus-5-5', 'Opus 5.5'))
+
+
+def choose_model(args):
+    """Default model for the Codex profile. It is only the starting default: /model, -m or --model change it later."""
+    if args.model:
+        return args.model
+    if not sys.stdin.isatty() or args.yes:
+        return MODEL_CHOICES[0][0]
+    print('Default model for the Codex profile (changeable later with /model, codex -m <id>, or --model):')
+    for i, (model_id, label) in enumerate(MODEL_CHOICES, 1):
+        print('  ' + str(i) + ') ' + label + '  (' + model_id + ')')
+    while True:
+        answer = input('Choose [1-' + str(len(MODEL_CHOICES)) + ', or type a model id]: ').strip()
+        if answer.isdigit() and 1 <= int(answer) <= len(MODEL_CHOICES):
+            return MODEL_CHOICES[int(answer) - 1][0]
+        if re.fullmatch(r'[a-z0-9][a-z0-9.-]*', answer):
+            return answer
+        print('  enter a number or a model id such as ' + MODEL_CHOICES[0][0])
+
+
+EFFORT_CHOICES = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def choose_effort(args):
+    """Reasoning effort for the Codex profile; also only a starting default (/model or -c changes it later)."""
+    if args.effort:
+        return args.effort
+    if not sys.stdin.isatty() or args.yes:
+        return 'high'
+    while True:
+        answer = input('Reasoning effort [' + '/'.join(EFFORT_CHOICES) + '] (Enter = high): ').strip().lower()
+        if not answer:
+            return 'high'
+        if answer in EFFORT_CHOICES:
+            return answer
+        print('  choose one of ' + ', '.join(EFFORT_CHOICES))
+
+
+def choose_opencodex_version(args):
+    if args.opencodex_version and args.opencodex_version != 'ask':
+        return args.opencodex_version
+    if not sys.stdin.isatty() or args.yes:
+        return PINNED_OPENCODEX
+    print('OpenCodex ' + PINNED_OPENCODEX + ' is the version verified with this kit (recommended).')
+    answer = input('Install ' + PINNED_OPENCODEX + '? [y = pinned ' + PINNED_OPENCODEX + ', n = latest release] ').strip().lower()
+    return PINNED_OPENCODEX if answer in ('', 'y', 'yes') else 'latest'
+
+
+def latest_opencodex():
+    with urllib.request.urlopen('https://api.github.com/repos/' + OPENCODEX_REPO + '/releases/latest', timeout=30) as response:
+        return json.loads(response.read().decode())['tag_name'].lstrip('v')
+
+
+def safe_extract(tar, dest):
+    dest = dest.resolve()
+    for member in tar.getmembers():
+        target = (dest / member.name).resolve()
+        if dest != target and dest not in target.parents:
+            raise RuntimeError('unsafe archive member: ' + member.name)
+        if member.issym() or member.islnk():
+            raise RuntimeError('archive links are not accepted: ' + member.name)
+    if hasattr(tarfile, 'data_filter'):
+        tar.extractall(dest, filter='data')
+    else:
+        tar.extractall(dest)
+
+
+def step_opencodex(args, info):
+    if info['ocx_path']:
+        note('opencodex', 'ok', info['ocx_version'])
+        return
+    arch = ARCH.get(info['arch'])
+    if not arch:
+        note('opencodex', 'failed', 'no release asset for ' + info['arch'])
+        return
+    if args.check:
+        note('opencodex', 'todo', 'download ocx-<version>-bun-linux-' + arch + '.tar.gz (pinned ' + PINNED_OPENCODEX + ' or latest) into ' + str(OCX_ROOT))
+        return
+    version = choose_opencodex_version(args)
+    if version == 'latest':
+        version = latest_opencodex()
+    asset = 'ocx-' + version + '-bun-linux-' + arch + '.tar.gz'
+    base = 'https://github.com/' + OPENCODEX_REPO + '/releases/download/v' + version + '/'
+    with tempfile.TemporaryDirectory(prefix='ocx-download.') as tmp:
+        archive = Path(tmp) / asset
+        print('  downloading ' + base + asset, flush=True)
+        urllib.request.urlretrieve(base + asset, archive)
+        with urllib.request.urlopen(base + asset + '.sha256', timeout=30) as response:
+            expected = response.read().decode().split()[0].lower()
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+        if digest != expected:
+            raise RuntimeError('sha256 mismatch for ' + asset)
+        extract = Path(tmp) / 'extract'
+        extract.mkdir()
+        with tarfile.open(archive) as tar:
+            safe_extract(tar, extract)
+        entries = list(extract.iterdir())
+        source = entries[0] if len(entries) == 1 and entries[0].is_dir() else extract
+        if not (source / 'ocx').is_file():
+            raise RuntimeError('archive has no ocx binary at its top level')
+        if OCX_ROOT.exists():
+            shutil.rmtree(OCX_ROOT)
+        OCX_ROOT.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, OCX_ROOT)
+    (OCX_ROOT / 'ocx').chmod(0o755)
+    LOCAL_BIN.mkdir(parents=True, exist_ok=True)
+    link = LOCAL_BIN / 'ocx'
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(OCX_ROOT / 'ocx')
+    info['ocx_path'], info['ocx_version'] = version_of('ocx')
+    note('opencodex', 'changed', 'installed ' + version + ' (sha256 verified) -> ' + str(link))
+    if str(LOCAL_BIN) not in os.environ.get('PATH', '').split(os.pathsep):
+        note('PATH', 'todo', 'add ' + str(LOCAL_BIN) + ' to PATH')
+
+
+def keys_state():
+    if not KEYS_FILE.is_file():
+        return None
+    text = KEYS_FILE.read_text()
+    state = {'mode': KEYS_FILE.stat().st_mode & 0o777, 'export': False, 'set': [], 'unset': []}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            state['export'] = True
+            line = line[7:]
+        name, _, value = line.partition('=')
+        (state['set'] if value.strip().strip('"\'') else state['unset']).append(name.strip())
+    return state
+
+
+def step_keys(args, info):
+    state = keys_state()
+    if state is None:
+        if args.check:
+            note('keys.env', 'todo', 'create ' + str(KEYS_FILE) + ' (0600) with ' + ', '.join(v + '=' for v in args.key_vars))
+            return
+        KEYS_FILE.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        KEYS_FILE.write_text(''.join(v + '=\n' for v in args.key_vars))
+        KEYS_FILE.chmod(0o600)
+        note('keys.env', 'changed', 'created ' + str(KEYS_FILE) + '; fill in the values with an editor (never paste keys into a shell command)')
+        state = keys_state()
+    changes = []
+    if state['mode'] != 0o600:
+        if not args.check:
+            KEYS_FILE.chmod(0o600)
+        changes.append('mode %o -> 600' % state['mode'])
+    if state['export']:
+        if not args.check:
+            KEYS_FILE.write_text(''.join(re.sub(r'^export\s+', '', line) + '\n' for line in KEYS_FILE.read_text().splitlines()))
+        changes.append('removed `export` prefixes (systemd EnvironmentFile wants KEY=VALUE)')
+    note('keys.env', ('todo' if args.check else 'changed') if changes else 'ok', '; '.join(changes) or 'KEY=VALUE, 0600')
+    missing = [v for v in args.key_vars if v not in state['set']]
+    if missing:
+        note('keys.env values', 'todo', 'empty: ' + ', '.join(missing) + ' (edit the file, then rerun; values are never read by this tool)')
+    for rc in (HOME / '.bashrc', HOME / '.profile'):
+        if rc.is_file() and 'opencodex/keys.env' in rc.read_text():
+            note('shell leak', 'warn', str(rc) + ' sources keys.env: exported keys end up in Codex shell snapshots; the service reads the file directly, so remove that line')
+
+
+def provider_configured():
+    result = run(['ocx', 'provider', 'show', PROVIDER], timeout=60)
+    return result.returncode == 0 and 'not configured' not in result.stdout + result.stderr
+
+
+def step_provider(args, info):
+    if not shutil.which('ocx'):
+        note('provider', 'skipped', 'ocx missing')
+        return
+    if provider_configured():
+        note('provider', 'ok', PROVIDER + ' registered')
+    elif args.check:
+        note('provider', 'todo', 'ocx provider add ' + PROVIDER + " --api-key '${" + args.key_vars[0] + "}' --default-model " + args.model + ' --set-default')
+    else:
+        run(['ocx', 'provider', 'add', PROVIDER, '--api-key', '${' + args.key_vars[0] + '}', '--default-model', args.model, '--set-default'], timeout=120, check=True)
+        note('provider', 'changed', PROVIDER + ' registered with ${' + args.key_vars[0] + '} reference, default model ' + args.model)
+    if len(args.key_vars) > 1:
+        rows = [l for l in run(['ocx', 'account', 'list', PROVIDER], timeout=60).stdout.splitlines() if l.startswith(PROVIDER + ' ')]
+        if len(rows) >= len(args.key_vars):
+            note('key pool', 'ok', str(len(rows)) + ' keys registered')
+        else:
+            note('key pool', 'todo', 'optional second key: printf %s "$' + args.key_vars[1] + '" | ocx account add-key ' + PROVIDER + ' --label secondary  (stdin only; stored in ~/.opencodex/config.json, 0600)')
+
+
+def dropin_text():
+    return '[Service]\nEnvironmentFile=%h/.config/opencodex/keys.env\n'
+
+
+def main_pid_has_keys(names):
+    pid = run(['systemctl', '--user', 'show', '-p', 'MainPID', '--value', SERVICE], timeout=20).stdout.strip()
+    if not pid.isdigit() or pid == '0':
+        return None
+    try:
+        environ = Path('/proc/' + pid + '/environ').read_bytes().split(b'\0')
+    except OSError:
+        return None
+    present = {entry.split(b'=', 1)[0].decode(errors='replace') for entry in environ if b'=' in entry}
+    return [n for n in names if n in present]
+
+
+def step_service(args, info):
+    if not shutil.which('ocx'):
+        note('service', 'skipped', 'ocx missing')
+        return
+    if not info['systemd_user']:
+        note('service', 'todo', 'no systemd user manager; start manually: set -a; . ' + str(KEYS_FILE) + '; set +a; ocx start')
+        return
+    changed = []
+    if args.check:
+        if not info['service_installed']:
+            changed.append('ocx service install')
+        if not (DROPIN.is_file() and DROPIN.read_text() == dropin_text()):
+            changed.append('write ' + str(DROPIN))
+        note('service', 'todo' if changed else 'ok', '; '.join(changed) or 'installed with keys.env drop-in')
+        return
+    if not info['service_installed']:
+        if info['proxy_up']:
+            run(['ocx', 'stop'], timeout=120)
+        run(['ocx', 'service', 'install'], timeout=300, check=True)
+        changed.append('service installed')
+    if not (DROPIN.is_file() and DROPIN.read_text() == dropin_text()):
+        DROPIN.parent.mkdir(parents=True, exist_ok=True)
+        DROPIN.write_text(dropin_text())
+        changed.append('drop-in written')
+    if changed:
+        run(['systemctl', '--user', 'daemon-reload'], timeout=60, check=True)
+        run(['systemctl', '--user', 'restart', SERVICE], timeout=120, check=True)
+    elif not info['proxy_up']:
+        run(['systemctl', '--user', 'start', SERVICE], timeout=120, check=True)
+        changed.append('service started')
+    if not wait_proxy():
+        note('service', 'failed', 'proxy not healthy at ' + PROXY_URL + '; see ~/.opencodex/service.log')
+        return
+    info['proxy_up'] = True
+    note('service', 'changed' if changed else 'ok', '; '.join(changed) or 'running')
+    seen = main_pid_has_keys(args.key_vars)
+    if seen is None:
+        note('service env', 'warn', 'could not inspect the proxy process environment')
+    elif set(seen) != set(args.key_vars):
+        note('service env', 'failed', 'missing in proxy environment: ' + ', '.join(sorted(set(args.key_vars) - set(seen))))
+    else:
+        note('service env', 'ok', 'key variables reach the proxy (names only checked)')
+    result = run(['ocx', 'models', 'live', '--provider', PROVIDER], timeout=120)
+    count = sum(1 for line in result.stdout.splitlines() if line.strip().startswith(PROVIDER + '/'))
+    if count:
+        note('model discovery', 'ok', str(count) + ' models' + (' incl. ' + args.model if PROVIDER + '/' + args.model in result.stdout else '; default ' + args.model + ' NOT listed'))
+    else:
+        note('model discovery', 'failed', 'no models from Anthropic (empty key or HTTP 401?) ' + (result.stderr or result.stdout).strip()[:200])
+
+
+def profile_keys(args):
+    return {'model': PROVIDER + '/' + args.model, 'model_reasoning_effort': args.effort, 'sandbox_mode': 'workspace-write'}
+
+
+def merge_profile(text, wanted, force):
+    """Set root-level keys, keeping everything Codex itself appends (trust table, TUI state)."""
+    lines = text.splitlines()
+    end = next((i for i, l in enumerate(lines) if l.strip().startswith('[')), len(lines))
+    conflicts, missing = [], dict(wanted)
+    for i in range(end):
+        match = re.match(r'^\s*([A-Za-z_]+)\s*=\s*"?([^"\n]*)"?\s*$', lines[i])
+        if match and match.group(1) in wanted:
+            key = match.group(1)
+            if match.group(2) != wanted[key]:
+                conflicts.append(key)
+                if force:
+                    lines[i] = key + ' = "' + wanted[key] + '"'
+            missing.pop(key, None)
+    new = [k + ' = "' + v + '"' for k, v in missing.items()]
+    lines[end:end] = new
+    return '\n'.join(lines) + ('\n' if lines else ''), conflicts, list(missing)
+
+
+def step_profile(args, info):
+    path = CODEX_HOME / (args.profile + '.config.toml')
+    text = path.read_text() if path.is_file() else ''
+    merged, conflicts, missing = merge_profile(text, profile_keys(args), args.force)
+    if conflicts and not args.force:
+        note('codex profile', 'warn', str(path) + ' sets ' + ', '.join(conflicts) + ' differently; keep it or rerun with --force')
+        return
+    if merged == text:
+        note('codex profile', 'ok', str(path))
+    elif args.check:
+        note('codex profile', 'todo', 'write ' + ', '.join(missing + conflicts) + ' into ' + str(path))
+    else:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(merged)
+        note('codex profile', 'changed', str(path) + ' (' + ', '.join(missing + conflicts) + ')')
+    main = CODEX_HOME / 'config.toml'
+    if main.is_file() and re.search(r'^profile\s*=', main.read_text(), re.M):
+        note('codex config', 'warn', 'config.toml has `profile = ...`, which Codex >= 0.167 rejects; remove it')
+
+
+def step_profile_env(args, info):
+    """Record the profile name for the kit's shell.sh, which exports LLM_CODEX_PROFILE for codex-main."""
+    if args.no_shell_env:
+        note('shell env', 'skipped', 'LLM_CODEX_PROFILE not written')
+        return
+    conf = Path(os.environ['LLM_WORKER_CONF_DIR'])
+    marker = conf / 'codex-profile'
+    current = marker.read_text().strip() if marker.is_file() else ''
+    if current == args.profile:
+        note('shell env', 'ok', str(marker) + ' = ' + args.profile)
+    elif args.check:
+        note('shell env', 'todo', 'write ' + args.profile + ' to ' + str(marker))
+    else:
+        conf.mkdir(parents=True, exist_ok=True, mode=0o700)
+        marker.write_text(args.profile + '\n')
+        note('shell env', 'changed', str(marker) + ' = ' + args.profile)
+    shell = conf / 'shell.sh'
+    if not shell.is_file() or 'LLM_CODEX_PROFILE' not in shell.read_text():
+        note('shell env', 'todo', 'regenerate the kit shell file so new terminals export LLM_CODEX_PROFILE: ./install.sh --install-only --setup-path (in the kit checkout)')
+    rc = HOME / '.bashrc'
+    if rc.is_file() and re.search(r'^\s*export LLM_CODEX_PROFILE=', rc.read_text(), re.M):
+        note('shell env', 'warn', str(rc) + ' also exports LLM_CODEX_PROFILE directly; remove that line, shell.sh now provides it')
+
+
+def step_claude_integration(args, info):
+    if not shutil.which('ocx') or not info['proxy_up']:
+        note('claude integration', 'skipped', 'proxy not running')
+        return
+    listing = run(['ocx', 'integration', 'native'], timeout=60).stdout
+    row = next((l for l in listing.splitlines() if l.split()[:1] == ['claude']), '')
+    if row and ' off ' in ' ' + row + ' ':
+        note('claude integration', 'ok', 'off')
+    elif args.check:
+        note('claude integration', 'todo', 'ocx integration native claude off')
+    else:
+        run(['ocx', 'integration', 'native', 'claude', 'off'], timeout=60, check=True)
+        note('claude integration', 'changed', 'off (Claude Code keeps using its own account)')
+    agents = HOME / '.claude/agents'
+    leftovers = [p for p in agents.glob('ocx-*.md') if 'generated-by: opencodex' in p.read_text()] if agents.is_dir() else []
+    if leftovers:
+        if args.check:
+            note('claude agents', 'todo', 'remove ' + ', '.join(p.name for p in leftovers))
+        else:
+            for p in leftovers:
+                p.unlink()
+            note('claude agents', 'changed', 'removed ' + ', '.join(p.name for p in leftovers))
+
+
+def apt_based(info):
+    return info['distro'] in ('ubuntu', 'debian', 'linuxmint', 'pop', 'neon') or 'ubuntu' in os_release().get('ID_LIKE', '') or 'debian' in os_release().get('ID_LIKE', '')
+
+
+def step_sandbox(args, info):
+    if info['sandbox_ok']:
+        note('sandbox', 'ok', 'bwrap creates user namespaces')
+        return
+    cmds = []
+    if not info['bwrap']:
+        cmds.append('sudo apt install -y bubblewrap' if apt_based(info) else 'install bubblewrap with your package manager')
+    if info['userns_restricted'] == '1':
+        profile = Path('/etc/apparmor.d/bwrap-userns-restrict')
+        extra = Path('/usr/share/apparmor/extra-profiles/bwrap-userns-restrict')
+        if not profile.is_file():
+            if apt_based(info):
+                if not extra.is_file():
+                    cmds.append('sudo apt install -y apparmor-profiles apparmor-utils')
+                cmds.append('sudo install -m 0644 ' + str(extra) + ' ' + str(profile))
+            else:
+                cmds.append('# no packaged bwrap AppArmor profile known for ' + info['distro'] + '; last resort: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0')
+        cmds.append('sudo apparmor_parser -r ' + str(profile))
+    if not cmds:
+        note('sandbox', 'warn', 'bwrap failed for a reason other than the AppArmor userns restriction; run: bwrap --unshare-user --ro-bind / / /bin/true')
+        return
+    if args.check or not args.sudo:
+        note('sandbox', 'todo', 'Codex would ask approval for every command. Run:\n    ' + '\n    '.join(cmds))
+        return
+    for cmd in cmds:
+        if cmd.startswith('#'):
+            note('sandbox', 'todo', cmd)
+            return
+        run(['sh', '-c', cmd], timeout=900, check=True, stdin=None)
+    info['sandbox_ok'] = run([shutil.which('bwrap') or 'bwrap', '--unshare-user', '--ro-bind', '/', '/', '/bin/true'], timeout=20).returncode == 0
+    note('sandbox', 'changed' if info['sandbox_ok'] else 'failed', 'bwrap ' + ('works now' if info['sandbox_ok'] else 'still blocked'))
+
+
+def step_linger(args, info):
+    if not info['systemd_user']:
+        return
+    if info['linger'] == 'yes':
+        note('linger', 'ok', 'proxy starts at boot without login')
+    elif args.sudo and not args.check:
+        run(['sudo', 'loginctl', 'enable-linger', os.environ.get('USER', '')], timeout=60, check=True, stdin=None)
+        note('linger', 'changed', 'enabled')
+    else:
+        note('linger', 'todo', 'sudo loginctl enable-linger ' + os.environ.get('USER', '$USER') + '  (proxy at boot without login)')
+
+
+def step_probe(args, info):
+    if not args.probe:
+        return
+    if args.check or not shutil.which('codex') or not info['proxy_up']:
+        note('probe', 'skipped', 'needs apply mode, codex and a running proxy')
+        return
+    print('  sending one small request through ' + PROVIDER + '/' + args.model + ' (billed to the active key)', flush=True)
+    result = run(['codex', 'exec', '-p', args.profile, '--skip-git-repo-check', '-s', 'read-only', 'Reply with exactly the word OK and nothing else.'], timeout=180)
+    header = {l.split(':', 1)[0].strip(): l.split(':', 1)[1].strip() for l in result.stdout.splitlines() if re.match(r'^(model|sandbox|reasoning effort):', l)}
+    if result.returncode == 0 and header.get('model') == PROVIDER + '/' + args.model:
+        note('probe', 'ok', 'model ' + header['model'] + ', sandbox ' + header.get('sandbox', '?') + ', effort ' + header.get('reasoning effort', '?'))
+    else:
+        note('probe', 'failed', (result.stderr or result.stdout).strip()[-300:])
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument('--check', action='store_true', help='report state and planned changes; change nothing')
+    p.add_argument('--sudo', action='store_true', help='also run the root steps (global Codex install, AppArmor profile, linger)')
+    p.add_argument('--probe', action='store_true', help='after setup, send one billed request to confirm the Claude route')
+    p.add_argument('--yes', action='store_true', help='no prompts; pinned OpenCodex version')
+    p.add_argument('--force', action='store_true', help='overwrite an existing Codex profile file')
+    p.add_argument('--model', default=None, help='default Anthropic model id for the profile; without it an interactive run asks (Fable 5.2 / Opus 5.5 / any id), a non-interactive run uses ' + MODEL_CHOICES[0][0])
+    p.add_argument('--effort', default=None, choices=EFFORT_CHOICES, help='reasoning effort for the profile; without it an interactive run asks, a non-interactive run uses high')
+    p.add_argument('--profile', default='orch', help='Codex profile name written to $CODEX_HOME/<name>.config.toml (default: %(default)s)')
+    p.add_argument('--opencodex-version', default='ask', help="'ask' (default), 'latest' or an exact version such as " + PINNED_OPENCODEX)
+    p.add_argument('--codex-global', action='store_true', help='install Codex system-wide (/usr/local/bin, /opt/codex) instead of ~/.local/bin')
+    p.add_argument('--key-vars', default=','.join(KEY_VARS), help='comma-separated variable names in keys.env; the first one is the provider key (default: %(default)s)')
+    p.add_argument('--no-shell-env', action='store_true', help='do not add LLM_CODEX_PROFILE to ~/.bashrc')
+    args = p.parse_args()
+    args.key_vars = [v.strip() for v in args.key_vars.split(',') if v.strip()]
+    if not args.key_vars or any(not re.fullmatch(r'[A-Z_][A-Z0-9_]*', v) for v in args.key_vars):
+        p.error('--key-vars must be uppercase variable names')
+    if 'ANTHROPIC_API_KEY' in args.key_vars:
+        p.error('do not use ANTHROPIC_API_KEY: Claude Code and the SDK read it first and would bill the API instead of your subscription')
+    print('codex-bootstrap ' + ('(check only)' if args.check else '(apply' + (', root steps included' if args.sudo else ', root steps printed') + ')'))
+    args.model = choose_model(args)
+    args.effort = choose_effort(args)
+    print('  default model: ' + PROVIDER + '/' + args.model + ', effort ' + args.effort)
+    info = detect()
+    print_detect(info)
+    print()
+    for step in (step_codex, step_opencodex, step_keys, step_provider, step_service, step_profile, step_profile_env,
+                 step_claude_integration, step_sandbox, step_linger, step_probe):
+        try:
+            step(args, info)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+            note(step.__name__.replace('step_', '').replace('_', ' '), 'failed', str(exc)[:400])
+    print()
+    todo = [r for r in report if r[1] in ('todo', 'failed', 'warn')]
+    print('summary: ' + str(sum(1 for r in report if r[1] == 'changed')) + ' changed, ' + str(sum(1 for r in report if r[1] == 'ok')) + ' ok, ' + str(len(todo)) + ' need attention')
+    for step, status, detail in todo:
+        print('  - ' + step + ' [' + status + ']: ' + detail.splitlines()[0])
+    return 1 if any(r[1] == 'failed' for r in report) else 0
+
+
+if __name__ == '__main__':
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        raise SystemExit(130)

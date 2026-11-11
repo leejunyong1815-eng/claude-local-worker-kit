@@ -32,3 +32,11 @@
 오프라인 검사는 `./tests/selftest.sh`, 실제 연결 검사는 `llm-probe`로 구분한다.
 후자는 명시적으로 모델 요청을 보낸다. 풀 시작 전 검사는 `claude-duo --probe` / `codex-duo --probe`로 요청한다.
 실제 CLI 검증은 작은 관리 태스크로 추가 확인한다.
+
+## Codex 메인 + OpenCodex 경로
+
+- 모델 탐색이 401: 프록시 프로세스 환경에 키 변수가 없다. `codex-bootstrap --check`의 `service env` 행을 보고, 서비스 드롭인(`EnvironmentFile`) 뒤 `systemctl --user restart opencodex-proxy`.
+- `codex-duo`가 `Ignoring --add-dir ... effective permissions`로 즉시 종료: 샌드박스가 read-only다. `~/.codex/orch.config.toml`의 `sandbox_mode = "workspace-write"`, 설정 디렉터리의 `codex-profile` 파일, 새 터미널에서 `echo $LLM_CODEX_PROFILE`을 확인하고, 저장소 `bin/`을 고쳤다면 `./install.sh --install-only`로 `~/.local/bin` 복사본을 갱신한다.
+- 명령마다 승인 요청과 bubblewrap 경고: `bwrap --unshare-user --ro-bind / / /bin/true`가 실패하면 AppArmor 사용자 네임스페이스 제한이다. `codex-bootstrap --sudo`가 배포판에 맞는 조치를 수행하거나 명령을 출력한다.
+- `ocx stop` 뒤 모델이 gpt로 돌아감: `config.toml`의 `model` 줄은 원복 때 지워진다. 모델은 프로파일 파일에 둔다.
+- 자세한 원인·해결 표는 [CODEX_ANTHROPIC.md](CODEX_ANTHROPIC.md)에 있다.

@@ -15,11 +15,13 @@ Codex를 메인으로 쓰려면 Codex CLI도 설치합니다. tmux는 창 표시
 sudo apt update
 sudo apt install -y git python3 curl ca-certificates tmux
 curl -fsSL https://claude.ai/install.sh | bash
-# Codex 메인을 쓸 경우: Node.js 20+ 환경에서 실행
-npm install -g @openai/codex
+# Codex 메인을 쓸 경우: 공식 독립 설치 스크립트 (Node 불필요). 전역 설치는 아래 codex-bootstrap --codex-global
+curl -fsSL https://chatgpt.com/codex/install.sh | sh
 ```
 
 Claude 메인은 `claude auth login`, Codex 메인은 `codex login`으로 본인 계정을 사용합니다.
+Codex 메인의 모델을 Anthropic API 키(크레딧)로 호출하려면 설치 뒤 `codex-bootstrap --check`로 시작합니다.
+구성과 함정 목록은 [Codex 메인 + Anthropic API 키](docs/CODEX_ANTHROPIC.md)에 있습니다.
 워커의 서버 인증은 별도이며 등록한 서버의 API 키 또는 명시적인 `none` 모드를 사용합니다.
 설치 방법은 [Claude Code 문서](https://code.claude.com/docs/en/setup)와
 [Codex CLI 문서](https://developers.openai.com/codex/cli/reference/)를 참고하세요.
